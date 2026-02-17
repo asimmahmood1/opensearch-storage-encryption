@@ -294,34 +294,35 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
         }
 
         private void writeEncryptedChunk(byte[] data, int offset, int length, long absoluteOffset) throws IOException {
-            int remaining = length;
-            int dataOffset = offset;
-            long currentOffset = absoluteOffset;
-
-            while (remaining > 0) {
-                int frameNumber = (int) (currentOffset >>> EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER);
-                long frameEnd = (long) (frameNumber + 1) << EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER;
-
-                if (frameNumber != currentFrameNumber) {
-                    finalizeCurrentFrame();
-                    initializeFrameCipher(frameNumber, currentOffset % frameSize);
-                }
-
-                int chunkSize = (int) Math.min(remaining, frameEnd - currentOffset);
-
-                try {
-                    // Use OpenSSL native cipher for encryption
-                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
-                    out.write(encrypted);
-
-                    currentOffset += chunkSize;
-                    currentFrameOffset += chunkSize;
-                    remaining -= chunkSize;
-                    dataOffset += chunkSize;
-                } catch (Throwable t) {
-                    throw new IOException("Encryption failed at offset " + currentOffset, t);
-                }
-            }
+            out.write(data, offset, length);
+//            int remaining = length;
+//            int dataOffset = offset;
+//            long currentOffset = absoluteOffset;
+//
+//            while (remaining > 0) {
+//                int frameNumber = (int) (currentOffset >>> EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER);
+//                long frameEnd = (long) (frameNumber + 1) << EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER;
+//
+//                if (frameNumber != currentFrameNumber) {
+//                    finalizeCurrentFrame();
+//                    initializeFrameCipher(frameNumber, currentOffset % frameSize);
+//                }
+//
+//                int chunkSize = (int) Math.min(remaining, frameEnd - currentOffset);
+//
+//                try {
+//                    // Use OpenSSL native cipher for encryption
+//                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
+//                    out.write(encrypted);
+//
+//                    currentOffset += chunkSize;
+//                    currentFrameOffset += chunkSize;
+//                    remaining -= chunkSize;
+//                    dataOffset += chunkSize;
+//                } catch (Throwable t) {
+//                    throw new IOException("Encryption failed at offset " + currentOffset, t);
+//                }
+//            }
         }
 
         private byte[] slice(byte[] data, int offset, int length) {

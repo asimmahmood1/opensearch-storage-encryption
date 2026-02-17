@@ -154,10 +154,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-        if (isDisabled()) {
-            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
-            return Collections.emptyMap();
-        }
+//        if (isDisabled()) {
+//            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
+//            return Collections.emptyMap();
+//        }
         log.debug("Crypto Directory Plugin is enabled. Registering cryptofs directory factory.");
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }

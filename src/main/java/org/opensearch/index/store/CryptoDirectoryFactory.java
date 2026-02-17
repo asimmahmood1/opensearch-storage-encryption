@@ -374,7 +374,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * @return the concrete implementation of the encrypted directory based on store type
      * @throws IOException if directory creation fails
      */
-    @Override
     public Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
         // Extract shardId from path structure: .../indices/{index-uuid}/{shard-id}/index/
         // location.getParent() gives us the shard directory

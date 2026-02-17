@@ -80,19 +80,17 @@ public class DecryptingTranslogTransferManager extends TranslogTransferManager {
      *
      * @param transferSnapshot the snapshot to transfer
      * @param translogTransferListener the transfer listener
-     * @param cryptoMetadata the crypto metadata for SSE-KMS
      * @return true if transfer succeeded
      * @throws IOException if transfer fails
      */
     @Override
     public boolean transferSnapshot(
         TransferSnapshot transferSnapshot,
-        TranslogTransferListener translogTransferListener,
-        CryptoMetadata cryptoMetadata
+        TranslogTransferListener translogTransferListener
     ) throws IOException {
         TransferSnapshot decryptingSnapshot = new DecryptingTransferSnapshot(transferSnapshot, keyResolver, translogUUID, cryptoFactory);
 
         // Call parent with decryption wrapper
-        return super.transferSnapshot(decryptingSnapshot, translogTransferListener, cryptoMetadata);
+        return super.transferSnapshot(decryptingSnapshot, translogTransferListener);
     }
 }

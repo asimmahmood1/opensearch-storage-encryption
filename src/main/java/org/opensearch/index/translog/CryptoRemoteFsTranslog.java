@@ -71,8 +71,7 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
             remoteTranslogTransferTracker,
             remoteStoreSettings,
             translogOperationHelper,
-            createCryptoChannelFactory(keyResolver, translogUUID),
-            true // isServerSideEncryptionEnabled
+            createCryptoChannelFactory(keyResolver, translogUUID)
         );
 
         this.keyResolver = keyResolver;
@@ -146,7 +145,7 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
         BlobPath mdPath = pathStrategy.generatePath(mdPathInput);
 
         BlobStoreTransferService transferService = new BlobStoreTransferService(
-            blobStoreRepository.blobStore(true), // SSE-KMS enabled
+            blobStoreRepository.blobStore(),
             threadPool
         );
 

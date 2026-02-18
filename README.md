@@ -125,8 +125,10 @@ bin/opensearch-plugin install file:///path/to/storage-encryption.zip
 Add KMS configuration to `opensearch.yml`:
 
 ```yaml
+plugins.crypto.enabled: true
 kms.region: us-east-1
 kms.key_arn: arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012
+
 ```
 
 Add AWS credentials to the keystore:

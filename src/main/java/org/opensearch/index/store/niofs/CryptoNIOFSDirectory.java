@@ -155,35 +155,8 @@ public class CryptoNIOFSDirectory extends NIOFSDirectory {
 
     @Override
     public long fileLength(String name) throws IOException {
-        if (name.contains("segments_") || name.endsWith(".si")) {
-            return super.fileLength(name);
-        }
-
-        Path path = dirPath.resolve(name);
-        long fileSize = super.fileLength(name);
-
-        if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
-            return fileSize;
-        }
-
-        String normalizedPath = EncryptionMetadataCache.normalizePath(path);
-
-        // check cache first
-        EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedPath);
-        if (cachedFooter != null) {
-            return fileSize - cachedFooter.getFooterLength();
-        }
-
-        // read footer from disk with OSEF validation
-        try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
-            try {
-                EncryptionFooter footer = EncryptionFooter
-                    .readViaFileChannel(normalizedPath, channel, keyResolver.getDataKey().getEncoded(), encryptionMetadataCache);
-                return fileSize - footer.getFooterLength();
-            } catch (EncryptionFooter.NotOSEFFileException e) {
-                return fileSize;
-            }
-        }
+        // Return actual file length without footer adjustment
+        return super.fileLength(name);
     }
 
     @Override

@@ -77,22 +77,14 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.normalizedFilePath = EncryptionMetadataCache.normalizePath(filePath);
         this.encryptionMetadataCache = encryptionMetadataCache;
 
-        // Get master key first
-        this.masterKey = keyResolver.getDataKey().getEncoded();
-
-        // Read footer and cache metadata atomically
-        EncryptionFooter footer = EncryptionFooter.readViaFileChannel(normalizedFilePath, channel, masterKey, encryptionMetadataCache);
-
-        // Get metadata (already cached by readViaFileChannel)
-        var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, masterKey);
-        this.messageId = metadata.getFooter().getMessageId();
-        this.frameSize = metadata.getFooter().getFrameSize();
-        this.frameSizePower = metadata.getFooter().getFrameSizePower();
-        this.algorithm = EncryptionAlgorithm.fromId(metadata.getFooter().getAlgorithmId());
-        this.keySpec = new SecretKeySpec(metadata.getFileKey(), ALGORITHM);
-
-        // Calculate footer length
-        this.footerLength = metadata.getFooter().getFooterLength();
+        // Encryption disabled - use dummy values
+        this.masterKey = new byte[32];
+        this.messageId = new byte[16];
+        this.frameSize = 0;
+        this.frameSizePower = 0;
+        this.algorithm = null;
+        this.keySpec = null;
+        this.footerLength = 0;
     }
 
     public CryptoBufferedIndexInput(

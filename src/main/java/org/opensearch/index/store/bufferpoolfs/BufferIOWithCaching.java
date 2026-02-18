@@ -147,7 +147,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             // Initialize first frame cipher
-            initializeFrameCipher(0, 0);
+//            initializeFrameCipher(0, 0);
         }
 
         @Override

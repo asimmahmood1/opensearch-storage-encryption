@@ -274,7 +274,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
         if (CryptoDirectoryFactory.STORE_TYPE.equals(storeType)) {
             // Validate crypto settings early at index creation time
-            CryptoIndexSettingsValidator.validate(indexSettings);
+//            CryptoIndexSettingsValidator.validate(indexSettings);
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
                  * Cache invalidation for closed shards is handled automatically

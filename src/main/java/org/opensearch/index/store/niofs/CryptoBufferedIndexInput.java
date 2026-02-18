@@ -172,50 +172,15 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
 
     @Override
     public long length() {
-        // Exclude footer from logical file length (only for main file, not slices)
-        if (isClone) {
-            return end - off;  // Slices use exact length passed in
-        } else {
-            return end - off - footerLength;  // Main file excludes variable footer
-        }
+        // Return actual file length without footer adjustment
+        return end - off;
     }
 
     @SuppressForbidden(reason = "FileChannel#read is efficient and used intentionally")
     private int read(ByteBuffer dst, long position) throws IOException {
-        if (tmpBuffer == EMPTY_BYTEBUFFER) {
-            tmpBuffer = ByteBuffer.allocate(CHUNK_SIZE);
-        }
-
-        long frameNumber = position >>> frameSizePower;
-        long offsetWithinFrame = position & ((1L << frameSizePower) - 1);
-        long frameEnd = (frameNumber + 1) << frameSizePower;
-        int maxReadInFrame = (int) Math.min(dst.remaining(), frameEnd - position);
-
-        tmpBuffer.clear().limit(maxReadInFrame);
-        int bytesRead = channel.read(tmpBuffer, position);
-        if (bytesRead == -1) {
-            return -1;
-        }
-        tmpBuffer.flip();
-
-        try {
-            Cipher cipher = algorithm.getDecryptionCipher();
-            byte[] frameIV = AesCipherFactory
-                .computeFrameIV(masterKey, messageId, frameNumber, offsetWithinFrame, this.normalizedFilePath, encryptionMetadataCache);
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(frameIV));
-
-            // skip partial AES block within frame if needed
-            int skipBytes = (int) (offsetWithinFrame & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1));
-            if (skipBytes > 0) {
-                cipher.update(ZERO_SKIP, 0, skipBytes);
-            }
-
-            // decrypt into dst
-            return (end - position > bytesRead) ? cipher.update(tmpBuffer, dst) : cipher.doFinal(tmpBuffer, dst);
-        } catch (ShortBufferException | IllegalBlockSizeException | BadPaddingException | InvalidAlgorithmParameterException
-            | InvalidKeyException ex) {
-            throw new IOException("Failed to decrypt block at position " + position, ex);
-        }
+        // Read plaintext data directly without decryption
+        int bytesRead = channel.read(dst, position);
+        return bytesRead;
     }
 
     @Override
@@ -225,18 +190,13 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             throw new EOFException("read past EOF: pos=" + pos + ", end=" + end);
         }
 
-        int readLength = b.remaining();
-        while (readLength > 0) {
-            final int toRead = Math.min(CHUNK_SIZE, readLength);
-            b.limit(b.position() + toRead);
+        // Read plaintext data directly
+        while (b.hasRemaining()) {
             final int bytesRead = read(b, pos);
-
             if (bytesRead < 0) {
-                throw new EOFException("Unexpected EOF while reading decrypted data at pos=" + pos);
+                throw new EOFException("Unexpected EOF while reading data at pos=" + pos);
             }
-
             pos += bytesRead;
-            readLength -= bytesRead;
         }
     }
 

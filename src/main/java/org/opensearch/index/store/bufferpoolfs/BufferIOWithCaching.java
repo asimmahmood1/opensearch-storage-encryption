@@ -454,18 +454,18 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             try {
                 // Compute frame-specific IV
-                byte[] frameIV = AesCipherFactory
-                    .computeFrameIV(
-                        masterKey,
-                        footer.getMessageId(),
-                        frameNumber,
-                        offsetWithinFrame,
-                        normalizedPath,
-                        encryptionMetadataCache
-                    );
+//                byte[] frameIV = AesCipherFactory
+//                    .computeFrameIV(
+//                        masterKey,
+//                        footer.getMessageId(),
+//                        frameNumber,
+//                        offsetWithinFrame,
+//                        normalizedPath,
+//                        encryptionMetadataCache
+//                    );
 
                 // Initialize new OpenSSL cipher context
-                currentCipher = OpenSslNativeCipher.initGCMCipher(fileKey.getEncoded(), frameIV, offsetWithinFrame);
+//                currentCipher = OpenSslNativeCipher.initGCMCipher(fileKey.getEncoded(), frameIV, offsetWithinFrame);
 
             } catch (Throwable t) {
                 throw new RuntimeException("Failed to initialize frame cipher", t);

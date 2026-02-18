@@ -207,21 +207,17 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 flushBuffer();
                 // Lucene writes footer here.
                 // this will also flush the buffer.
-                // Finalize current frame
-                finalizeCurrentFrame();
-
-                // Set final frame count in footer
-                footer.setFrameCount(totalFrames);
-
-                // Write footer with file key for authentication
-                byte[] fileKeyBytes = fileKey.getEncoded();
-                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
+                
+                // Encryption disabled - no footer writing
+//                finalizeCurrentFrame();
+//                footer.setFrameCount(totalFrames);
+//                byte[] fileKeyBytes = fileKey.getEncoded();
+//                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
+//                if (normalizedFilePath != null) {
+//                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
+//                }
 
                 super.close();
-
-                if (normalizedFilePath != null) {
-                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
-                }
 
             } catch (IOException e) {
                 exception = e;

@@ -345,15 +345,15 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // Lucene writes footer here.
                 // this will also flush the buffer.
 
-                finalizeCurrentFrame();
-                footer.setFrameCount(totalFrames);
-
-                // Serialize footer with file key for authentication
-                byte[] fileKeyBytes = fileKey.getEncoded();
-                out.write(footer.serialize(null, fileKeyBytes));
-
-                // Cache metadata for future reads
-                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
+//                finalizeCurrentFrame();
+//                footer.setFrameCount(totalFrames);
+//
+//                // Serialize footer with file key for authentication
+//                byte[] fileKeyBytes = fileKey.getEncoded();
+//                out.write(footer.serialize(null, fileKeyBytes));
+//
+//                // Cache metadata for future reads
+//                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling

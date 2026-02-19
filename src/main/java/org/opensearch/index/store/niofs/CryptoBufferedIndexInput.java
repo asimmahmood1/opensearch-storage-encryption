@@ -4,21 +4,12 @@
  */
 package org.opensearch.index.store.niofs;
 
-import static org.opensearch.index.store.cipher.AesCipherFactory.ALGORITHM;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
 
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.ShortBufferException;
-import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.apache.lucene.store.BufferedIndexInput;
@@ -28,7 +19,6 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.cipher.EncryptionAlgorithm;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
-import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.key.KeyResolver;
 
 /**
@@ -88,21 +78,21 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
     }
 
     public CryptoBufferedIndexInput(
-        String resourceDesc,
-        FileChannel fc,
-        long off,
-        long length,
-        int bufferSize,
-        KeyResolver keyResolver,
-        SecretKeySpec keySpec,
-        int footerLength,
-        long frameSize,
-        int frameSizePower,
-        short algorithmId,
-        byte[] masterKey,
-        byte[] messageId,
-        String normalizedFilePath,
-        EncryptionMetadataCache encryptionMetadataCache
+            String resourceDesc,
+            FileChannel fc,
+            long off,
+            long length,
+            int bufferSize,
+            KeyResolver keyResolver,
+            SecretKeySpec keySpec,
+            int footerLength,
+            long frameSize,
+            int frameSizePower,
+            EncryptionAlgorithm algorithm,
+            byte[] masterKey,
+            byte[] messageId,
+            String normalizedFilePath,
+            EncryptionMetadataCache encryptionMetadataCache
     )
         throws IOException {
         super(resourceDesc, bufferSize);
@@ -115,7 +105,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
         this.footerLength = footerLength;
         this.frameSize = frameSize;
         this.frameSizePower = frameSizePower;
-        this.algorithm = EncryptionAlgorithm.fromId(algorithmId);
+        this.algorithm = algorithm;
         this.masterKey = masterKey;  // Passed from parent
         this.messageId = messageId;  // Passed from parent
         this.normalizedFilePath = normalizedFilePath;
@@ -154,7 +144,7 @@ final class CryptoBufferedIndexInput extends BufferedIndexInput {
             footerLength,
             frameSize,
             frameSizePower,
-            algorithm.getAlgorithmId(),
+            algorithm,
             masterKey,  // Pass directory key
             messageId,      // Pass message ID
             normalizedFilePath,

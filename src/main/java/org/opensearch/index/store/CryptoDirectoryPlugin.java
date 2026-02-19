@@ -158,7 +158,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 //            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
 //            return Collections.emptyMap();
 //        }
-        log.debug("Crypto Directory Plugin is enabled. Registering cryptofs directory factory.");
+        log.debug("Crypto Directory Plugin is enabled with crypto plugin {}. Registering cryptofs directory factory.", isDisabled());
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }
 
@@ -168,7 +168,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (isDisabled()) {
-            return Optional.empty();
+//            return Optional.empty();
+            log.warn("Using plugin with crypto disabled");
         }
 
         // Only provide our custom engine factory for cryptofs indices
@@ -195,8 +196,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         MetricsRegistry metricsRegistry
     ) {
         if (isDisabled()) {
-            log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
-            return Collections.emptyList();
+            log.info("Crypto Directory Plugin is disabled. Attemping component initialization.");
+//            return Collections.emptyList();
         }
 
         this.nodeEnvironment = nodeEnvironment;

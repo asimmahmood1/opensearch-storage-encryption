@@ -179,7 +179,7 @@ public class BlockSlotTinyCache {
             }
         }
 
-        final int maxAttempts = 10;
+        final int maxAttempts = 10; // TODO: isn't that alot of attempts, why 10?
 
         FileBlockCacheKey key = slotKeys[slotIdx];
         if (key == null || key.fileOffset() != blockOff) {
@@ -220,6 +220,7 @@ public class BlockSlotTinyCache {
 
             if (attempts < maxAttempts - 1) {
                 LockSupport.parkNanos(50_000L << attempts);
+                // TODO: add metrics on this
             }
         }
 

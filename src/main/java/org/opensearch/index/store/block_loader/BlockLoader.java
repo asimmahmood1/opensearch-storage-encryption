@@ -116,6 +116,7 @@ public interface BlockLoader<T> {
      * @throws Exception if loading fails due to I/O errors, pool pressure, or other issues
      */
     default T[] load(Path filePath, long startOffset, long blockCount) throws Exception {
+        // TODO: make poolTimeoutMs configurable
         return load(filePath, startOffset, blockCount, 5000); // 5 seconds for critical on-demand loads
     }
 

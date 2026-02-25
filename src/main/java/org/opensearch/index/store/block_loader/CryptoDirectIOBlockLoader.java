@@ -24,7 +24,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
-import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.KeyResolver;
@@ -88,12 +87,14 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
         RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
+        int blockSize = Math.toIntExact(Files.getFileStore(filePath).getBlockSize());
+
 
         try (
             Arena arena = Arena.ofConfined();
             FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption())
         ) {
-            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena);
+            MemorySegment readBytes = directIOReadAligned(channel, startOffset, readLength, arena, blockSize);
             long bytesRead = readBytes.byteSize();
 
 //            String normalizedPath = filePath.toAbsolutePath().normalize().toString();

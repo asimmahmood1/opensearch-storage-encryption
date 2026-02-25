@@ -82,21 +82,22 @@ public class DirectIOReaderUtil {
      *
      * <p><b>Correct: Reading from offset 1024</b></p>
      * <pre>
-     *                      ↓ start here  
+     *                      ↓ start here
      * ┌─────┬─────┬─────┬─────┬─────┬─────┐
      * │  0  │ 512 │1024 │1536 │2048 │2560 │
      *                     │█████│█████│
      * </pre>
      *
-     * @param channel the file channel to read from
-     * @param offset the byte offset in the file to start reading from
-     * @param length the number of bytes to read
-     * @param arena the memory arena for allocating the result segment
+     * @param channel   the file channel to read from
+     * @param offset    the byte offset in the file to start reading from
+     * @param length    the number of bytes to read
+     * @param arena     the memory arena for allocating the result segment
+     * @param blockSize
      * @return a memory segment containing the read data
      * @throws IOException if the read operation fails
      */
-    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena) throws IOException {
-        int alignment = Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getPageSize());
+    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena, int blockSize) throws IOException {
+        int alignment = Math.max(blockSize, PanamaNativeAccess.getPageSize());
 
         // Require alignment to be a power of 2
         if ((alignment & (alignment - 1)) != 0) {

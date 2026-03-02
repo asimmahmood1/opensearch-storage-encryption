@@ -21,6 +21,7 @@ import org.opensearch.index.store.block_cache.BlockCacheBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -275,6 +276,7 @@ public final class PoolBuilder {
         int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
 
         AtomicInteger threadId = new AtomicInteger();
+        // TODO: why not use OS's threadpool
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
             t.setDaemon(true);

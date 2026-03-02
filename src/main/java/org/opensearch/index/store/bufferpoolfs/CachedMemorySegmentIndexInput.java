@@ -6,6 +6,7 @@ package org.opensearch.index.store.bufferpoolfs;
 
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
+import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -13,6 +14,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.concurrent.Executor;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -21,6 +23,7 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.RandomAccessInput;
 import org.apache.lucene.util.BitUtil;
 import org.apache.lucene.util.GroupVIntUtil;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
@@ -77,6 +80,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     private int lastOffsetInBlock;
 
     private final BlockSlotTinyCache blockSlotTinyCache;
+    private final Executor prefetchExecutor;
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
@@ -104,7 +108,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedMemorySegment> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        BlockSlotTinyCache blockSlotTinyCache
+        BlockSlotTinyCache blockSlotTinyCache,
+        Executor prefetchExecutor
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -115,7 +120,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             false,
-            blockSlotTinyCache
+            blockSlotTinyCache,
+            prefetchExecutor
         );
         try {
             input.seek(0L);
@@ -134,7 +140,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        BlockSlotTinyCache blockSlotTinyCache
+        BlockSlotTinyCache blockSlotTinyCache,
+        Executor prefetchExecutor
     ) {
         super(resourceDescription);
         this.path = path;
@@ -145,6 +152,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         this.readaheadContext = readaheadContext;
         this.isSlice = isSlice;
         this.blockSlotTinyCache = blockSlotTinyCache;
+        this.prefetchExecutor = prefetchExecutor;
     }
 
     void ensureOpen() {
@@ -762,7 +770,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             true,
-            blockSlotTinyCache
+            blockSlotTinyCache,
+            prefetchExecutor
         );
 
         try {
@@ -774,33 +783,26 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         return slice;
     }
 
+    // TODO: add a backoff mechanism
     @Override
     public void prefetch(long offset, long length) throws IOException {
-        if (readaheadContext == null) {
-            return;
-        }
-
         ensureOpen();
 
-        // copied from lucene's logic.
-        if (BitUtil.isZeroOrPowerOfTwo(consecutivePrefetchHitCount++) == false) {
-            // We've had enough consecutive hits in our cache that this number is neither zero
-            // nor a power of two. There is a good chance that a good chunk of this index input is
-            // cached in our block cache. Let's skip the overhead of triggering readahead.
-            return;
-        }
+        prefetchExecutor.execute(() -> {
+            final long startFileOffset = absoluteBaseOffset + offset;
+            final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
 
-        final long startFileOffset = absoluteBaseOffset + offset;
-        final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
+            final long endFileOffset = absoluteBaseOffset + offset + length;
+            final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
 
-        FileBlockCacheKey key = new FileBlockCacheKey(path, startBlockOffset);
-        BlockCacheValue<RefCountedMemorySegment> cached = blockCache.get(key);
+            final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
-        if (cached == null) {
-            // We have a cache miss, reset the counter and trigger readahead
-            consecutivePrefetchHitCount = 0;
-            readaheadContext.triggerReadahead(startFileOffset);
-        }
+            try {
+                blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
+            } catch (IOException e) {
+                LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);
+            }
+        });
     }
 
     @Override

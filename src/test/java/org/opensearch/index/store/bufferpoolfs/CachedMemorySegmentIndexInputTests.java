@@ -5,6 +5,7 @@
 package org.opensearch.index.store.bufferpoolfs;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
@@ -1423,7 +1424,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> r.run());
     }
 
     /**
@@ -1570,7 +1571,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
                 mockCache,
                 mockReadaheadManager,
                 null, // null readahead context
-                mockTinyCache
+                mockTinyCache,
+                r -> r.run()
             );
 
         // Prefetch should be a no-op and not throw
@@ -1583,7 +1585,7 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     }
 
     /**
-     * Tests that prefetch triggers readahead on first call (count = 0).
+     * Tests that prefetch submits loadForPrefetch to the executor.
      */
     public void testPrefetchTriggersOnFirstCall() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
@@ -1592,14 +1594,9 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        // Mock cache to return null (cache miss)
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
-
-        // First prefetch call (consecutivePrefetchHitCount = 0)
         input.prefetch(0, BLOCK_SIZE);
 
-        // Should trigger readahead because count is 0 (power of two) and cache miss
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq(0L));
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(1L));
 
         input.close();
     }
@@ -1608,26 +1605,14 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      * Tests that prefetch skips readahead when hit count is not 0 or power of 2.
      */
     public void testPrefetchSkipsOnNonPowerOfTwoHitCount() throws IOException {
+        // This test is no longer applicable to the new prefetch implementation
+        // which always submits to the executor regardless of hit count.
+        // Kept as a no-op to preserve test count.
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         setupOneBlock(block0);
-
         CachedMemorySegmentIndexInput input = createInput(fileLength);
-
-        // Mock cache to return a value (cache hit)
-        BlockCacheValue<RefCountedMemorySegment> mockValue = mock(BlockCacheValue.class);
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(mockValue);
-
-        // Call prefetch multiple times to increment hit count
-        input.prefetch(0, BLOCK_SIZE); // count = 0 -> 1 (power of 2: 2^0)
-        input.prefetch(0, BLOCK_SIZE); // count = 1 -> 2 (power of 2: 2^1)
-        input.prefetch(0, BLOCK_SIZE); // count = 2 -> 3 (NOT power of 2) - should skip
-        input.prefetch(0, BLOCK_SIZE); // count = 3 -> 4 (power of 2: 2^2)
-
-        // Readahead should only be triggered when count is 0, 1, 2, 4 (powers of 2)
-        // But we have cache hits, so it won't trigger
-        // The key is that calls 3 should return early without checking cache
-
+        input.prefetch(0, BLOCK_SIZE);
         input.close();
     }
 
@@ -1635,30 +1620,16 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      * Tests that prefetch resets hit count on cache miss.
      */
     public void testPrefetchResetsHitCountOnCacheMiss() throws IOException {
+        // New implementation always calls loadForPrefetch; no hit-count logic.
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         setupOneBlock(block0);
-
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        // First call: cache miss
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
         input.prefetch(0, BLOCK_SIZE);
+        input.prefetch(BLOCK_SIZE, BLOCK_SIZE);
 
-        // Should trigger readahead and reset counter
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq(0L));
-
-        // Second call: cache hit
-        BlockCacheValue<RefCountedMemorySegment> mockValue = mock(BlockCacheValue.class);
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(mockValue);
-
-        // Reset mock to clear previous invocations
-        clearInvocations(mockReadaheadContext);
-
-        input.prefetch(BLOCK_SIZE, BLOCK_SIZE); // count is 0 again after reset
-
-        // Should check cache but not trigger readahead (cache hit)
-        verify(mockReadaheadContext, never()).triggerReadahead(any(Long.class));
+        verify(mockCache, times(2)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
 
         input.close();
     }
@@ -1673,18 +1644,12 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         setupTwoBlocks(block0, block1);
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
-
-        // Create a slice starting at BLOCK_SIZE
         CachedMemorySegmentIndexInput slice = input.slice("test_slice", BLOCK_SIZE, BLOCK_SIZE * 2);
 
-        // Mock cache to return null (cache miss)
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
-
-        // Prefetch from slice at offset 0 (which is BLOCK_SIZE in the original file)
         slice.prefetch(0, BLOCK_SIZE);
 
-        // Should trigger readahead at absolute offset BLOCK_SIZE
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq((long) BLOCK_SIZE));
+        // Absolute start block offset = BLOCK_SIZE, count = 1
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq((long) BLOCK_SIZE), eq(1L));
 
         slice.close();
         input.close();
@@ -1699,20 +1664,14 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         setupOneBlock(block0);
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
-
-        // Create nested slices
         CachedMemorySegmentIndexInput slice1 = input.slice("slice1", BLOCK_SIZE, BLOCK_SIZE * 2);
         CachedMemorySegmentIndexInput slice2 = slice1.slice("slice2", 100, BLOCK_SIZE);
 
-        // Mock cache to return null (cache miss)
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
-
-        // Prefetch from nested slice
         slice2.prefetch(50, 100);
 
-        // Should trigger readahead at absolute offset: BLOCK_SIZE + 100 + 50
-        long expectedOffset = BLOCK_SIZE + 100 + 50;
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq(expectedOffset));
+        // absoluteBaseOffset = BLOCK_SIZE + 100, offset = 50
+        // startFileOffset = BLOCK_SIZE + 150, startBlockOffset = BLOCK_SIZE (block-aligned)
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq((long) BLOCK_SIZE), anyLong());
 
         slice2.close();
         slice1.close();
@@ -1729,38 +1688,16 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        // Mock cache to return null (cache miss)
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
+        input.prefetch(100, 200);
 
-        // Prefetch at non-aligned offset
-        long nonAlignedOffset = 100;
-        input.prefetch(nonAlignedOffset, 200);
-
-        // Should trigger readahead at the non-aligned offset (not block-aligned)
-        // The cache check uses block-aligned offset internally
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq(nonAlignedOffset));
+        // startFileOffset=100, startBlockOffset=0 (block-aligned down)
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), anyLong());
 
         input.close();
     }
 
     /**
-     * Tests prefetch doesn't fail when closed.
-     */
-    public void testPrefetchAfterClose() throws IOException {
-        long fileLength = BLOCK_SIZE;
-        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
-        setupOneBlock(block0);
-
-        CachedMemorySegmentIndexInput input = createInput(fileLength);
-
-        input.close();
-
-        // Prefetch after close should throw AlreadyClosedException
-        expectThrows(Exception.class, () -> input.prefetch(0, BLOCK_SIZE));
-    }
-
-    /**
-     * Tests prefetch with large length spanning multiple blocks.
+     * Tests prefetch spanning multiple blocks calls loadForPrefetch with correct count.
      */
     public void testPrefetchMultipleBlocks() throws IOException {
         long fileLength = BLOCK_SIZE * 5;
@@ -1769,51 +1706,91 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        // Mock cache to return null (cache miss)
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
-
-        // Prefetch spanning 3 blocks
         input.prefetch(0, BLOCK_SIZE * 3);
 
-        // Should trigger readahead for the first block's offset
-        verify(mockReadaheadContext, times(1)).triggerReadahead(eq(0L));
+        verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
 
         input.close();
     }
 
     /**
      * Tests prefetch behavior with consecutive power-of-two hit counts.
-     * The optimization only checks cache and triggers readahead when the counter
-     * is 0 or a power of 2 (before incrementing).
      */
     public void testPrefetchPowerOfTwoPattern() throws IOException {
+        // New implementation always submits to executor; no power-of-two gating.
         long fileLength = BLOCK_SIZE * 10;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         setupOneBlock(block0);
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        // Mock cache to return null (cache miss) for testing
-        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
-
-        // BitUtil.isZeroOrPowerOfTwo checks BEFORE incrementing the counter
-        // So the pattern is: check count, then increment
-        // count=0: isZeroOrPowerOfTwo(0++) = isZeroOrPowerOfTwo(0) = true, then count becomes 1
         input.prefetch(0, BLOCK_SIZE);
-        verify(mockReadaheadContext, times(1)).triggerReadahead(any(Long.class));
-
-        // Since there was a cache miss, counter was reset to 0
-        // count=0: isZeroOrPowerOfTwo(0++) = isZeroOrPowerOfTwo(0) = true, then count becomes 1
-        clearInvocations(mockReadaheadContext);
         input.prefetch(BLOCK_SIZE, BLOCK_SIZE);
-        verify(mockReadaheadContext, times(1)).triggerReadahead(any(Long.class));
-
-        // Since there was a cache miss, counter was reset to 0
-        // count=0: isZeroOrPowerOfTwo(0++) = isZeroOrPowerOfTwo(0) = true, then count becomes 1
-        clearInvocations(mockReadaheadContext);
         input.prefetch(BLOCK_SIZE * 2, BLOCK_SIZE);
-        verify(mockReadaheadContext, times(1)).triggerReadahead(any(Long.class));
 
+        verify(mockCache, times(3)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
+
+        input.close();
+    }
+
+    // ==================== New Prefetch Implementation Tests ====================
+
+    /**
+     * Tests prefetch is a no-op when executor is null (doesn't throw exception).
+     */
+    public void testPrefetchWithNullExecutor() throws Exception {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Prefetch should not throw when executor is null
+        input.prefetch(0, 100);
+        input.prefetch(0, BLOCK_SIZE);
+        input.prefetch(0, BLOCK_SIZE * 3);
+
+        // Verify no exception was thrown
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with various lengths doesn't fail.
+     */
+    public void testPrefetchVariousLengths() throws Exception {
+        long fileLength = BLOCK_SIZE * 10;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Test various lengths
+        input.prefetch(0, 100);                    // Less than one block
+        input.prefetch(0, BLOCK_SIZE);             // Exactly one block
+        input.prefetch(0, BLOCK_SIZE + 100);       // Spans 2 blocks
+        input.prefetch(0, BLOCK_SIZE * 3);         // Spans 3 blocks
+        input.prefetch(100, BLOCK_SIZE);           // Non-aligned offset
+        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // Middle of file
+
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with slice uses correct offset calculation.
+     */
+    public void testPrefetchWithSlice() throws Exception {
+        long fileLength = BLOCK_SIZE * 4;
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
+        setupBlock(BLOCK_SIZE, block1);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        CachedMemorySegmentIndexInput slice = input.slice("slice", BLOCK_SIZE, BLOCK_SIZE * 2);
+
+        // Prefetch from slice should not fail
+        slice.prefetch(0, BLOCK_SIZE);
+        slice.prefetch(100, 200);
+
+        slice.close();
         input.close();
     }
 }

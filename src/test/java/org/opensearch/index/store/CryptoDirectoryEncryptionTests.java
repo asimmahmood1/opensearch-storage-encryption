@@ -588,7 +588,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockCacheA,
                 blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                r -> r.run()
             )
         ) {
             // Write data
@@ -748,7 +749,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockCacheA,
                 blockLoaderA,
                 readAheadWorkerA,
-                encryptionMetadataCache
+                encryptionMetadataCache,
+                r -> r.run()
             )
         ) {
             // Write data

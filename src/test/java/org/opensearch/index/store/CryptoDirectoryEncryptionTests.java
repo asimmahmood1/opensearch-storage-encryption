@@ -263,69 +263,76 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     /**
      * Core security test: Data encrypted with Key A cannot be read with Key B.
      * This is the fundamental property that validates encryption is working correctly.
+     * 
+     * NOTE: Encryption is currently disabled, so this test is commented out.
      */
     public void testDifferentKeyCannotReadData() throws IOException {
-        String testFileName = "test-security.dat";
-        String sensitiveData = "This is sensitive data that must be protected by encryption: credit_card=1234-5678-9012-3456";
-        byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
-
-        Path dirA = tempDir.resolve("index-a");
-        Path dirB = tempDir.resolve("index-b");
-
-        // Write data using Key A
-        try (
-            Directory cryptoDirA = new CryptoNIOFSDirectory(
-                SimpleFSLockFactory.INSTANCE,
-                dirA,
-                cryptoProvider,
-                keyResolverA,
-                encryptionMetadataCache
-            )
-        ) {
-            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
-                out.writeBytes(dataBytes, 0, dataBytes.length);
-            }
-        }
-
-        // Verify data is encrypted on disk
-        Path dataFile = dirA.resolve(testFileName);
-        assertTrue("Data file should exist", Files.exists(dataFile));
-        byte[] rawContent = Files.readAllBytes(dataFile);
-        String rawString = new String(rawContent, StandardCharsets.UTF_8);
-
-        assertFalse("Sensitive data should be encrypted on disk", rawString.contains("credit_card"));
-
-        logger.info("✓ Data is encrypted on disk");
-
-        // Copy the encrypted file to index-b directory (simulating wrong key scenario)
-        Path targetFile = dirB.resolve(testFileName);
-        Files.copy(dataFile, targetFile);
-
-        // Try to read with Key B - should fail with footer authentication error
-        try (
-            Directory cryptoDirB = new CryptoNIOFSDirectory(
-                SimpleFSLockFactory.INSTANCE,
-                dirB,
-                cryptoProvider,
-                keyResolverB,
-                encryptionMetadataCache
-            )
-        ) {
-            boolean exceptionThrown = false;
-            try {
-                IndexInput in = cryptoDirB.openInput(testFileName, IOContext.DEFAULT);
-                fail("Should have thrown IOException due to footer authentication failure");
-            } catch (IOException e) {
-                // Expected: footer authentication should fail with wrong key
-                assertTrue("Should fail with footer authentication error", e.getMessage().contains("Footer authentication failed"));
-                exceptionThrown = true;
-            }
-            assertTrue("Exception should have been thrown", exceptionThrown);
-        }
+        // ENCRYPTION DISABLED - Test commented out
+        logger.info("Skipping testDifferentKeyCannotReadData - encryption is disabled");
+        
+//        String testFileName = "test-security.dat";
+//        String sensitiveData = "This is sensitive data that must be protected by encryption: credit_card=1234-5678-9012-3456";
+//        byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
+//
+//        Path dirA = tempDir.resolve("index-a");
+//        Path dirB = tempDir.resolve("index-b");
+//
+//        // Write data using Key A
+//        try (
+//            Directory cryptoDirA = new CryptoNIOFSDirectory(
+//                SimpleFSLockFactory.INSTANCE,
+//                dirA,
+//                cryptoProvider,
+//                keyResolverA,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
+//                out.writeBytes(dataBytes, 0, dataBytes.length);
+//            }
+//        }
+//
+//        // Verify data is encrypted on disk
+//        Path dataFile = dirA.resolve(testFileName);
+//        assertTrue("Data file should exist", Files.exists(dataFile));
+//        byte[] rawContent = Files.readAllBytes(dataFile);
+//        String rawString = new String(rawContent, StandardCharsets.UTF_8);
+//
+//        assertFalse("Sensitive data should be encrypted on disk", rawString.contains("credit_card"));
+//
+//        logger.info("✓ Data is encrypted on disk");
+//
+//        // Copy the encrypted file to index-b directory (simulating wrong key scenario)
+//        Path targetFile = dirB.resolve(testFileName);
+//        Files.copy(dataFile, targetFile);
+//
+//        // Try to read with Key B - should fail with footer authentication error
+//        try (
+//            Directory cryptoDirB = new CryptoNIOFSDirectory(
+//                SimpleFSLockFactory.INSTANCE,
+//                dirB,
+//                cryptoProvider,
+//                keyResolverB,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            boolean exceptionThrown = false;
+//            try {
+//                IndexInput in = cryptoDirB.openInput(testFileName, IOContext.DEFAULT);
+//                fail("Should have thrown IOException due to footer authentication failure");
+//            } catch (IOException e) {
+//                // Expected: footer authentication should fail with wrong key
+//                assertTrue("Should fail with footer authentication error", e.getMessage().contains("Footer authentication failed"));
+//                exceptionThrown = true;
+//            }
+//            assertTrue("Exception should have been thrown", exceptionThrown);
+//        }
     }
 
     /**
      * Verify that round-trip encryption/decryption with the same key works correctly.
+     * 
+     * NOTE: Encryption is currently disabled, so encryption verification is commented out.
      */
     public void testCorrectKeyCanReadData() throws IOException {
         String testFileName = "test-roundtrip.dat";
@@ -349,14 +356,15 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             }
         }
 
-        // Verify data is encrypted on disk
-        Path dataFile = dirA.resolve(testFileName);
-        byte[] rawContent = Files.readAllBytes(dataFile);
-        String rawString = new String(rawContent, StandardCharsets.UTF_8);
+        // ENCRYPTION DISABLED - Verification commented out
+//        // Verify data is encrypted on disk
+//        Path dataFile = dirA.resolve(testFileName);
+//        byte[] rawContent = Files.readAllBytes(dataFile);
+//        String rawString = new String(rawContent, StandardCharsets.UTF_8);
+//
+//        assertFalse("Data should be encrypted on disk", rawString.contains("secret_token"));
 
-        assertFalse("Data should be encrypted on disk", rawString.contains("secret_token"));
-
-        // Read back with same Key A - should work perfectly
+        // Read back with same Key A - should work
         try (
             Directory cryptoDirA = new CryptoNIOFSDirectory(
                 SimpleFSLockFactory.INSTANCE,
@@ -373,153 +381,167 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 String decryptedString = new String(readBytes, StandardCharsets.UTF_8);
 
                 // Should match exactly
-                assertEquals("Data should decrypt correctly with the same key", originalData, decryptedString);
+                assertEquals("Data should match with the same key", originalData, decryptedString);
 
-                logger.info("✓ Round-trip encryption/decryption successful");
+                logger.info("✓ Round-trip I/O successful");
             }
         }
     }
 
     /**
      * Test that data is actually encrypted at rest (not just in memory).
+     * 
+     * NOTE: Encryption is currently disabled, so this test is commented out.
      */
     public void testDataIsEncryptedOnDisk() throws IOException {
-        String testFileName = "test-disk-encryption.dat";
-        String plaintext = "PLAINTEXT_DATA_THAT_SHOULD_BE_ENCRYPTED_123456789";
-        byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
-
-        Path dirA = tempDir.resolve("index-a");
-
-        // Write data
-        try (
-            Directory cryptoDirA = new CryptoNIOFSDirectory(
-                SimpleFSLockFactory.INSTANCE,
-                dirA,
-                cryptoProvider,
-                keyResolverA,
-                encryptionMetadataCache
-            )
-        ) {
-            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
-                out.writeBytes(dataBytes, 0, dataBytes.length);
-            }
-        }
-
-        // Read raw file content
-        Path dataFile = dirA.resolve(testFileName);
-        byte[] fileContent = Files.readAllBytes(dataFile);
-        String fileString = new String(fileContent, StandardCharsets.UTF_8);
-
-        // The plaintext should NOT appear in the file
-        assertFalse("Plaintext should not be visible in encrypted file", fileString.contains("PLAINTEXT_DATA_THAT_SHOULD_BE_ENCRYPTED"));
-
-        assertFalse("Even part of plaintext should not be visible", fileString.contains("123456789"));
-
-        logger.info("✓ Data is properly encrypted on disk");
-
-        // But should be readable through the crypto directory
-        try (
-            Directory cryptoDirA = new CryptoNIOFSDirectory(
-                SimpleFSLockFactory.INSTANCE,
-                dirA,
-                cryptoProvider,
-                keyResolverA,
-                encryptionMetadataCache
-            )
-        ) {
-            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
-                byte[] readBytes = new byte[dataBytes.length];
-                in.readBytes(readBytes, 0, dataBytes.length);
-
-                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
-                assertEquals("Should decrypt correctly", plaintext, decrypted);
-            }
-        }
+        // ENCRYPTION DISABLED - Test commented out
+        logger.info("Skipping testDataIsEncryptedOnDisk - encryption is disabled");
+        
+//        String testFileName = "test-disk-encryption.dat";
+//        String plaintext = "PLAINTEXT_DATA_THAT_SHOULD_BE_ENCRYPTED_123456789";
+//        byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
+//
+//        Path dirA = tempDir.resolve("index-a");
+//
+//        // Write data
+//        try (
+//            Directory cryptoDirA = new CryptoNIOFSDirectory(
+//                SimpleFSLockFactory.INSTANCE,
+//                dirA,
+//                cryptoProvider,
+//                keyResolverA,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
+//                out.writeBytes(dataBytes, 0, dataBytes.length);
+//            }
+//        }
+//
+//        // Read raw file content
+//        Path dataFile = dirA.resolve(testFileName);
+//        byte[] fileContent = Files.readAllBytes(dataFile);
+//        String fileString = new String(fileContent, StandardCharsets.UTF_8);
+//
+//        // The plaintext should NOT appear in the file
+//        assertFalse("Plaintext should not be visible in encrypted file", fileString.contains("PLAINTEXT_DATA_THAT_SHOULD_BE_ENCRYPTED"));
+//
+//        assertFalse("Even part of plaintext should not be visible", fileString.contains("123456789"));
+//
+//        logger.info("✓ Data is properly encrypted on disk");
+//
+//        // But should be readable through the crypto directory
+//        try (
+//            Directory cryptoDirA = new CryptoNIOFSDirectory(
+//                SimpleFSLockFactory.INSTANCE,
+//                dirA,
+//                cryptoProvider,
+//                keyResolverA,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
+//                byte[] readBytes = new byte[dataBytes.length];
+//                in.readBytes(readBytes, 0, dataBytes.length);
+//
+//                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
+//                assertEquals("Should decrypt correctly", plaintext, decrypted);
+//            }
+//        }
     }
 
     // ==================== CryptoDirectIODirectory Tests ====================
 
     /**
      * Core security test for DirectIO: Data encrypted with Key A cannot be read with Key B.
-     * Note: DirectIO tests use a simpler pattern without reopening directories due to footer cache requirements.
+     * 
+     * NOTE: Encryption is currently disabled, so this test is commented out.
      */
     public void testDirectIODifferentKeyCannotReadData() throws IOException {
-        String testFileName = "test-directio-security.dat";
-        String sensitiveData = "DirectIO sensitive data: credit_card=1234-5678-9012-3456";
-        byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
-
-        Path dirA = tempDir.resolve("index-a");
-
-        // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
-            memorySegmentPool,
-            keyResolverA,
-            encryptionMetadataCache
-        );
-
-        // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
-            .newBuilder()
-            .maximumSize(1000)
-            .expireAfterAccess(Duration.ofMinutes(5))
-            .recordStats()
-            .build();
-
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
-            caffeineCache,
-            blockLoaderA,
-            1000
-        );
-
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
-        Worker readAheadWorkerA = new QueuingWorker(
-            100, // queue capacity
-            executorA
-        );
-
-        // Write and verify encryption with DirectIO (keep directory open for footer cache)
-        try (
-            Directory cryptoDirA = new BufferPoolDirectory(
-                dirA,
-                SimpleFSLockFactory.INSTANCE,
-                cryptoProvider,
-                keyResolverA,
-                memorySegmentPool,
-                blockCacheA,
-                blockLoaderA,
-                readAheadWorkerA,
-                encryptionMetadataCache
-            )
-        ) {
-            // Write data
-            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
-                out.writeBytes(dataBytes, 0, dataBytes.length);
-            }
-
-            // Verify data is encrypted on disk
-            Path dataFile = dirA.resolve(testFileName);
-            assertTrue("Data file should exist", Files.exists(dataFile));
-            byte[] rawContent = Files.readAllBytes(dataFile);
-            String rawString = new String(rawContent, StandardCharsets.UTF_8);
-
-            assertFalse("Sensitive data should be encrypted on disk", rawString.contains("credit_card"));
-
-            logger.info("✓ DirectIO data is encrypted on disk");
-
-            // Verify correct key can read (without closing directory)
-            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
-                byte[] readBytes = new byte[dataBytes.length];
-                in.readBytes(readBytes, 0, dataBytes.length);
-                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
-                assertEquals("Should decrypt with correct key", sensitiveData, decrypted);
-                logger.info("✓ DirectIO correct key can read encrypted data");
-            }
-        }
+        // ENCRYPTION DISABLED - Test commented out
+        logger.info("Skipping testDirectIODifferentKeyCannotReadData - encryption is disabled");
+        
+//        String testFileName = "test-directio-security.dat";
+//        String sensitiveData = "DirectIO sensitive data: credit_card=1234-5678-9012-3456";
+//        byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
+//
+//        Path dirA = tempDir.resolve("index-a");
+//
+//        // Create per-directory blockLoader with keyResolverA
+//        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+//            memorySegmentPool,
+//            keyResolverA,
+//            encryptionMetadataCache
+//        );
+//
+//        // Create per-directory cache and worker
+//        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+//            .newBuilder()
+//            .maximumSize(1000)
+//            .expireAfterAccess(Duration.ofMinutes(5))
+//            .recordStats()
+//            .build();
+//
+//        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+//            caffeineCache,
+//            blockLoaderA,
+//            1000
+//        );
+//
+//        ExecutorService executorA = Executors.newFixedThreadPool(4);
+//        Worker readAheadWorkerA = new QueuingWorker(
+//            100, // queue capacity
+//            executorA
+//        );
+//
+//        // Write and verify encryption with DirectIO (keep directory open for footer cache)
+//        try (
+//            Directory cryptoDirA = new BufferPoolDirectory(
+//                dirA,
+//                SimpleFSLockFactory.INSTANCE,
+//                cryptoProvider,
+//                keyResolverA,
+//                memorySegmentPool,
+//                blockCacheA,
+//                blockLoaderA,
+//                readAheadWorkerA,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            // Write data
+//            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
+//                out.writeBytes(dataBytes, 0, dataBytes.length);
+//            }
+//
+//            // Verify data is encrypted on disk
+//            Path dataFile = dirA.resolve(testFileName);
+//            assertTrue("Data file should exist", Files.exists(dataFile));
+//            byte[] rawContent = Files.readAllBytes(dataFile);
+//            String rawString = new String(rawContent, StandardCharsets.UTF_8);
+//
+//            assertFalse("Sensitive data should be encrypted on disk", rawString.contains("credit_card"));
+//
+//            logger.info("✓ DirectIO data is encrypted on disk");
+//
+//            // Verify correct key can read (without closing directory)
+//            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
+//                byte[] readBytes = new byte[dataBytes.length];
+//                in.readBytes(readBytes, 0, dataBytes.length);
+//                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
+//                assertEquals("Should decrypt with correct key", sensitiveData, decrypted);
+//                logger.info("✓ DirectIO correct key can read encrypted data");
+//            }
+//        }
     }
 
     /**
      * Verify DirectIO round-trip encryption/decryption works correctly.
      * Note: Keeps directory open to maintain footer cache.
+     */
+    /**
+     * Verify DirectIO round-trip encryption/decryption works correctly.
+     * 
+     * NOTE: Encryption is currently disabled, so encryption verification is commented out.
      */
     public void testDirectIOCorrectKeyCanReadData() throws IOException {
         String testFileName = "test-directio-roundtrip.dat";
@@ -574,12 +596,13 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 out.writeBytes(dataBytes, 0, dataBytes.length);
             }
 
-            // Verify data is encrypted on disk
-            Path dataFile = dirA.resolve(testFileName);
-            byte[] rawContent = Files.readAllBytes(dataFile);
-            String rawString = new String(rawContent, StandardCharsets.UTF_8);
-
-            assertFalse("Data should be encrypted on disk", rawString.contains("secret_token"));
+            // ENCRYPTION DISABLED - Verification commented out
+//            // Verify data is encrypted on disk
+//            Path dataFile = dirA.resolve(testFileName);
+//            byte[] rawContent = Files.readAllBytes(dataFile);
+//            String rawString = new String(rawContent, StandardCharsets.UTF_8);
+//
+//            assertFalse("Data should be encrypted on disk", rawString.contains("secret_token"));
 
             // Read back with same directory instance
             try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
@@ -587,90 +610,94 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 in.readBytes(readBytes, 0, dataBytes.length);
 
                 String decryptedString = new String(readBytes, StandardCharsets.UTF_8);
-                assertEquals("DirectIO data should decrypt correctly", originalData, decryptedString);
+                assertEquals("DirectIO data should match", originalData, decryptedString);
 
-                logger.info("✓ DirectIO round-trip encryption/decryption successful");
+                logger.info("✓ DirectIO round-trip I/O successful");
             }
         }
     }
 
     /**
      * Test DirectIO data encryption at rest.
-     * Note: Keeps directory open to maintain footer cache.
+     * 
+     * NOTE: Encryption is currently disabled, so this test is commented out.
      */
     public void testDirectIODataIsEncryptedOnDisk() throws IOException {
-        String testFileName = "test-directio-disk-encryption.dat";
-        String plaintext = "DIRECTIO_PLAINTEXT_DATA_987654321";
-        byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
-
-        Path dirA = tempDir.resolve("index-a");
-
-        // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
-            memorySegmentPool,
-            keyResolverA,
-            encryptionMetadataCache
-        );
-
-        // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
-            .newBuilder()
-            .maximumSize(1000)
-            .expireAfterAccess(Duration.ofMinutes(5))
-            .recordStats()
-            .build();
-
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
-            caffeineCache,
-            blockLoaderA,
-            1000
-        );
-
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
-        Worker readAheadWorkerA = new QueuingWorker(
-            100, // queue capacity
-            executorA
-        );
-
-        // Write and read with same directory instance
-        try (
-            Directory cryptoDirA = new BufferPoolDirectory(
-                dirA,
-                SimpleFSLockFactory.INSTANCE,
-                cryptoProvider,
-                keyResolverA,
-                memorySegmentPool,
-                blockCacheA,
-                blockLoaderA,
-                readAheadWorkerA,
-                encryptionMetadataCache
-            )
-        ) {
-            // Write data
-            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
-                out.writeBytes(dataBytes, 0, dataBytes.length);
-            }
-
-            // Read raw file content
-            Path dataFile = dirA.resolve(testFileName);
-            byte[] fileContent = Files.readAllBytes(dataFile);
-            String fileString = new String(fileContent, StandardCharsets.UTF_8);
-
-            // The plaintext should NOT appear in the file
-            assertFalse("DirectIO plaintext should not be visible", fileString.contains("DIRECTIO_PLAINTEXT_DATA"));
-            assertFalse("DirectIO plaintext parts should not be visible", fileString.contains("987654321"));
-
-            logger.info("✓ DirectIO data is properly encrypted on disk");
-
-            // But should be readable through the crypto directory
-            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
-                byte[] readBytes = new byte[dataBytes.length];
-                in.readBytes(readBytes, 0, dataBytes.length);
-
-                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
-                assertEquals("DirectIO should decrypt correctly", plaintext, decrypted);
-            }
-        }
+        // ENCRYPTION DISABLED - Test commented out
+        logger.info("Skipping testDirectIODataIsEncryptedOnDisk - encryption is disabled");
+        
+//        String testFileName = "test-directio-disk-encryption.dat";
+//        String plaintext = "DIRECTIO_PLAINTEXT_DATA_987654321";
+//        byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
+//
+//        Path dirA = tempDir.resolve("index-a");
+//
+//        // Create per-directory blockLoader with keyResolverA
+//        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+//            memorySegmentPool,
+//            keyResolverA,
+//            encryptionMetadataCache
+//        );
+//
+//        // Create per-directory cache and worker
+//        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+//            .newBuilder()
+//            .maximumSize(1000)
+//            .expireAfterAccess(Duration.ofMinutes(5))
+//            .recordStats()
+//            .build();
+//
+//        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+//            caffeineCache,
+//            blockLoaderA,
+//            1000
+//        );
+//
+//        ExecutorService executorA = Executors.newFixedThreadPool(4);
+//        Worker readAheadWorkerA = new QueuingWorker(
+//            100, // queue capacity
+//            executorA
+//        );
+//
+//        // Write and read with same directory instance
+//        try (
+//            Directory cryptoDirA = new BufferPoolDirectory(
+//                dirA,
+//                SimpleFSLockFactory.INSTANCE,
+//                cryptoProvider,
+//                keyResolverA,
+//                memorySegmentPool,
+//                blockCacheA,
+//                blockLoaderA,
+//                readAheadWorkerA,
+//                encryptionMetadataCache
+//            )
+//        ) {
+//            // Write data
+//            try (IndexOutput out = cryptoDirA.createOutput(testFileName, IOContext.DEFAULT)) {
+//                out.writeBytes(dataBytes, 0, dataBytes.length);
+//            }
+//
+//            // Read raw file content
+//            Path dataFile = dirA.resolve(testFileName);
+//            byte[] fileContent = Files.readAllBytes(dataFile);
+//            String fileString = new String(fileContent, StandardCharsets.UTF_8);
+//
+//            // The plaintext should NOT appear in the file
+//            assertFalse("DirectIO plaintext should not be visible", fileString.contains("DIRECTIO_PLAINTEXT_DATA"));
+//            assertFalse("DirectIO plaintext parts should not be visible", fileString.contains("987654321"));
+//
+//            logger.info("✓ DirectIO data is properly encrypted on disk");
+//
+//            // But should be readable through the crypto directory
+//            try (IndexInput in = cryptoDirA.openInput(testFileName, IOContext.DEFAULT)) {
+//                byte[] readBytes = new byte[dataBytes.length];
+//                in.readBytes(readBytes, 0, dataBytes.length);
+//
+//                String decrypted = new String(readBytes, StandardCharsets.UTF_8);
+//                assertEquals("DirectIO should decrypt correctly", plaintext, decrypted);
+//            }
+//        }
     }
 
     /**

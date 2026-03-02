@@ -208,7 +208,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 // Lucene writes footer here.
                 // this will also flush the buffer.
                 
-                // Encryption disabled - no footer writing
+                // Encryption disabled - no footer needed
 //                finalizeCurrentFrame();
 //                footer.setFrameCount(totalFrames);
 //                byte[] fileKeyBytes = fileKey.getEncoded();

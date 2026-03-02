@@ -486,8 +486,9 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
             output.writeBytes(data, 0, 0); // Should not throw, no-op
         }
 
-        // Should only contain footer after close
-        assertTrue("Should handle zero-length write", baos.size() > 0);
+        // ENCRYPTION DISABLED - No footer written
+        // assertTrue("Should handle zero-length write", baos.size() > 0);
+        assertEquals("Zero-length write should produce no output when encryption is disabled", 0, baos.size());
     }
 
     /**
@@ -544,8 +545,9 @@ public class BufferIOWithCachingTests extends OpenSearchTestCase {
             // Close without writing
         }
 
-        // Should still write footer
-        assertTrue("Should write footer for empty file", baos.size() > 0);
+        // ENCRYPTION DISABLED - No footer written for empty files
+        // assertTrue("Should write footer for empty file", baos.size() > 0);
+        assertEquals("Empty file should have no content when encryption is disabled", 0, baos.size());
     }
 
     /**

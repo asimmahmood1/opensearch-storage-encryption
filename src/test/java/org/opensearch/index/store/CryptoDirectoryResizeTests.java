@@ -46,6 +46,10 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
  * Tests for clone/resize operations in CryptoDirectoryFactory.
  * Verifies that keyfiles are correctly copied from source to target indices
  * during clone, split, and shrink operations.
+ * 
+ * NOTE: testEndToEndCloneWithEncryptedDocuments is currently failing because 
+ * encryption has been disabled. This test expects encrypted behavior and will 
+ * be resolved when encryption is re-enabled.
  */
 public class CryptoDirectoryResizeTests extends LuceneTestCase {
 

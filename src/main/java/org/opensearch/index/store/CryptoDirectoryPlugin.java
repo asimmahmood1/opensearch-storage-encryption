@@ -161,15 +161,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         final int processorCount = OpenSearchExecutors.allocatedProcessors(settings);
 
         return Arrays.asList(
-                //Prefetch is only called in saerch flow, which already has bounded threads
-                new ScalingExecutorBuilder(
+                new FixedExecutorBuilder(
+                        settings,
                         CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
                         processorCount * 2,
-                        processorCount * 10,
-                        TimeValue.timeValueMinutes(5),
+                        1000,
                         "plugins.crypto.threadpool.prefetch"
                 )
-                // TODO: add read ahead
         );
     }
 

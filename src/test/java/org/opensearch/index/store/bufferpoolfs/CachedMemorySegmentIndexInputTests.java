@@ -1647,20 +1647,21 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         // Test various lengths
         input.prefetch(0, 100);                    // Less than one block - startBlock=0, count=1
-        input.prefetch(0, BLOCK_SIZE);             // Exactly one block - startBlock=0, count=1
-        input.prefetch(0, BLOCK_SIZE + 100);       // Spans 2 blocks - startBlock=0, count=2
-        input.prefetch(0, BLOCK_SIZE * 3);         // Spans 3 blocks - startBlock=0, count=3
-        input.prefetch(100, BLOCK_SIZE);           // Non-aligned offset - startBlock=0, count=1
+        input.prefetch(0, BLOCK_SIZE);             // Exactly one block - startBlock=0, count=1 (deduped)
+        input.prefetch(0, BLOCK_SIZE + 100);       // Spans 2 blocks - startBlock=0, count=2 (deduped)
+        input.prefetch(0, BLOCK_SIZE * 3);         // Spans 3 blocks - startBlock=0, count=3 (deduped)
+        input.prefetch(100, BLOCK_SIZE);           // Non-aligned offset - startBlock=0, count=1 (deduped)
         input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // Middle of file - startBlock=BLOCK_SIZE, count=2
 
         // Wait for async executor to complete
         Thread.sleep(100);
 
-        // Verify cache.get() was called for each prefetch to check first block
-        verify(mockCache, times(6)).get(any(FileBlockCacheKey.class));
+        // With prefetch cache dedup, only 2 unique startBlockOffsets: 0 and BLOCK_SIZE
+        // So cache.get() is called only 2 times (once per unique block)
+        verify(mockCache, times(2)).get(any(FileBlockCacheKey.class));
 
-        // Verify loadForPrefetch was called 6 times total
-        verify(mockCache, times(6)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
+        // Verify loadForPrefetch was called 2 times (once per unique block)
+        verify(mockCache, times(2)).loadForPrefetch(eq(testPath), anyLong(), anyLong());
 
         input.close();
     }

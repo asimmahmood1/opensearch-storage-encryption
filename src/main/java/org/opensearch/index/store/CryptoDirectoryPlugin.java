@@ -37,11 +37,13 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
+import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
 import org.opensearch.index.store.rest.RestClearBufferPoolCacheAction;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
@@ -61,7 +63,6 @@ import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.FixedExecutorBuilder;
-import org.opensearch.threadpool.ScalingExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
@@ -84,6 +85,20 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     public static final Setting<Boolean> CRYPTO_PLUGIN_ENABLED_SETTING = Setting
         .boolSetting(CRYPTO_PLUGIN_ENABLED, false, Setting.Property.NodeScope, Setting.Property.Filtered, Setting.Property.Final);
+
+    /**
+     * Setting for overriding the prefetch thread pool queue size.
+     * If not set (-1), calculated dynamically based on cache size.
+     */
+    public static final Setting<Integer> PREFETCH_QUEUE_SIZE_SETTING = Setting
+        .intSetting("node.store.crypto.prefetch.queue_size", -1, -1, Setting.Property.NodeScope);
+
+    /**
+     * Setting for overriding the prefetch thread pool thread count.
+     * If not set (-1), calculated dynamically based on queue size.
+     */
+    public static final Setting<Integer> PREFETCH_THREAD_COUNT_SETTING = Setting
+        .intSetting("node.store.crypto.prefetch.thread_count", -1, -1, Setting.Property.NodeScope);
 
     private NodeEnvironment nodeEnvironment;
     private final boolean enabled;
@@ -152,23 +167,43 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.NODE_KEY_EXPIRY_INTERVAL_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
-                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING
+                PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
+                PREFETCH_QUEUE_SIZE_SETTING,
+                PREFETCH_THREAD_COUNT_SETTING
             );
         return settings;
     }
 
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        final int processorCount = OpenSearchExecutors.allocatedProcessors(settings);
+        // Check for user overrides, otherwise calculate dynamically
+        int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
+        int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
 
-        return Arrays.asList(
+        if (queueSize == -1 || threads == -1) {
+            // Calculate cache blocks using PoolSizeCalculator
+            long maxCacheBlocks = PoolSizeCalculator.calculateMaxCacheBlocks(settings, StaticConfigs.CACHE_BLOCK_SIZE);
+
+            // Use cache size to determine, but double it so we're more aggressive than read ahead
+            if (queueSize == -1) {
+                queueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks) * 2;
+            }
+            if (threads == -1) {
+                threads = ReadAheadSizingPolicy.calculateWorkerThreads(queueSize) * 2;
+            }
+        }
+
+        log.info("Prefetch thread pool configured: threads={}, queueSize={}", threads, queueSize);
+
+        return Arrays
+            .asList(
                 new FixedExecutorBuilder(
-                        settings,
-                        CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
-                        processorCount * 2,
-                        1000,
-                        "plugins.crypto.threadpool.prefetch"
+                    settings,
+                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
+                    threads,
+                    queueSize,
+                    "plugins.crypto.threadpool.prefetch"
                 )
-        );
+            );
     }
 
     /**
@@ -218,8 +253,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         MetricsRegistry metricsRegistry
     ) {
         if (isDisabled()) {
-            log.info("Crypto Directory Plugin is disabled. Attemping component initialization.");
-//            return Collections.emptyList();
+            log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
+            return Collections.emptyList();
         }
         this.nodeEnvironment = nodeEnvironment;
         // Store remote store parameters for CryptoEngineFactory to access
@@ -277,13 +312,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return Arrays
-            .asList(
-                new RestRegisterCryptoAction(),
-                new RestUnregisterCryptoAction(),
-                new RestGetIndexCountForKeyAction(),
-                new RestClearBufferPoolCacheAction()
-            );
+        return Arrays.asList(new RestRegisterCryptoAction(), new RestUnregisterCryptoAction(), new RestGetIndexCountForKeyAction());
     }
 
     @Override
@@ -302,7 +331,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
         if (CryptoDirectoryFactory.STORE_TYPE.equals(storeType)) {
             // Validate crypto settings early at index creation time
-//            CryptoIndexSettingsValidator.validate(indexSettings);
+            CryptoIndexSettingsValidator.validate(indexSettings);
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
                  * Cache invalidation for closed shards is handled automatically

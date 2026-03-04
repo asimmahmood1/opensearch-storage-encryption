@@ -124,7 +124,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         long[] prefetchCache = new long[PREFETCH_CACHE_SIZE];
         Arrays.fill(prefetchCache, -1);
         int[] prefetchCacheIndex = new int[1];
-        
+
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
             path,
@@ -822,18 +822,12 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
         try {
             prefetchExecutor.execute(() -> {
-                // Check if first block is already cached
-                final FileBlockCacheKey firstBlockKey = new FileBlockCacheKey(path, startBlockOffset);
-                if (blockCache.get(firstBlockKey) != null) {
-                    return;
-                }
-
                 final long endFileOffset = absoluteBaseOffset + offset + length;
                 final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
                 final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
 
                 try {
-                    // single IO call is made
+                    // cache check occurs inside
                     blockCache.loadForPrefetch(path, startBlockOffset, blockCount);
                 } catch (IOException e) {
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", path, startBlockOffset, blockCount, e);

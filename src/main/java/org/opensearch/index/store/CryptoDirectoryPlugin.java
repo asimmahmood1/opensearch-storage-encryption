@@ -254,7 +254,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     ) {
         if (isDisabled()) {
             log.debug("Crypto Directory Plugin is disabled. Skipping component initialization.");
-            return Collections.emptyList();
+            // return Collections.emptyList();
         }
         this.nodeEnvironment = nodeEnvironment;
         // Store remote store parameters for CryptoEngineFactory to access
@@ -280,6 +280,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         CryptoDirectoryFactory.setThreadPool(threadPool);
         CryptoMetricsService.initialize(metricsRegistry);
 
+        log.info("Crypto Directory Plugin ready");
         return Collections.emptyList();
     }
 

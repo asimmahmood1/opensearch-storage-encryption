@@ -505,7 +505,9 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            resources.getMaxCacheBlocks()
+            resources.getMaxCacheBlocks(),
+            resources.getPrefetchCache(),
+            threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH)
         );
 
         // Use the shared node-wide read-ahead worker
@@ -521,8 +523,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             directoryCache,
             loader,
             readaheadWorker,
-            encryptionMetadataCache,
-            threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH)
+            encryptionMetadataCache
         );
     }
 

@@ -62,7 +62,12 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
      * @param prefetchCache optional shared cache for prefetch deduplication across all files
      */
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache) {
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        ConcurrentMap<BlockCacheKey, Boolean> prefetchCache
+    ) {
         this(cache, blockLoader, maxBlocks, prefetchCache, null);
     }
 
@@ -75,7 +80,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param prefetchCache optional shared cache for prefetch deduplication across all files
      * @param prefetchExecutor optional executor for async prefetch operations
      */
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache, java.util.concurrent.Executor prefetchExecutor) {
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        ConcurrentMap<BlockCacheKey, Boolean> prefetchCache,
+        java.util.concurrent.Executor prefetchExecutor
+    ) {
         this.blockLoader = blockLoader;
         this.cache = cache;
         this.prefetchCache = prefetchCache;
@@ -175,8 +186,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
         // Clear prefetch cache entries for this file
         if (prefetchCache != null) {
-            prefetchCache.keySet().removeIf(key -> 
-                key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalized));
+            prefetchCache.keySet().removeIf(key -> key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalized));
         }
     }
 
@@ -244,7 +254,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                         LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
                     }
                 });
-            } catch (Exception e){
+            } catch (Exception e) {
                 LOGGER.info("prefetch task rejected: path={} offset={} count={}", filePath, startOffset, blockCount, e.getMessage());
 
             }
@@ -265,7 +275,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
             FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
-            //check if this block is already in progress
+            // check if this block is already in progress
             if (prefetchCache == null || prefetchCache.putIfAbsent(key, Boolean.TRUE) == null) {
                 if (cache.getIfPresent(key) == null) {
                     missingKeys[missingCount++] = key;

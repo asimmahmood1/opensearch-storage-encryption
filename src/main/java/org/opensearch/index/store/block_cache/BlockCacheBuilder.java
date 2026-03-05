@@ -39,7 +39,11 @@ public final class BlockCacheBuilder {
         private final ThreadPoolExecutor executor;
         private final ConcurrentMap<BlockCacheKey, Boolean> prefetchCache;
 
-        CacheWithExecutor(CaffeineBlockCache<T, V> cache, ThreadPoolExecutor executor, ConcurrentMap<BlockCacheKey, Boolean> prefetchCache) {
+        CacheWithExecutor(
+            CaffeineBlockCache<T, V> cache,
+            ThreadPoolExecutor executor,
+            ConcurrentMap<BlockCacheKey, Boolean> prefetchCache
+        ) {
             this.cache = cache;
             this.executor = executor;
             this.prefetchCache = prefetchCache;

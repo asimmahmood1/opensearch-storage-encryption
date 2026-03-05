@@ -26,7 +26,6 @@ import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
-import org.opensearch.index.store.cipher.AesCipherFactory;
 import org.opensearch.index.store.cipher.EncryptionAlgorithm;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.OpenSslNativeCipher;
@@ -147,7 +146,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             this.fileKey = new javax.crypto.spec.SecretKeySpec(derivedKey, "AES");
 
             // Initialize first frame cipher
-//            initializeFrameCipher(0, 0);
+            // initializeFrameCipher(0, 0);
         }
 
         @Override
@@ -295,34 +294,34 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
         private void writeEncryptedChunk(byte[] data, int offset, int length, long absoluteOffset) throws IOException {
             out.write(data, offset, length);
-//            int remaining = length;
-//            int dataOffset = offset;
-//            long currentOffset = absoluteOffset;
-//
-//            while (remaining > 0) {
-//                int frameNumber = (int) (currentOffset >>> EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER);
-//                long frameEnd = (long) (frameNumber + 1) << EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER;
-//
-//                if (frameNumber != currentFrameNumber) {
-//                    finalizeCurrentFrame();
-//                    initializeFrameCipher(frameNumber, currentOffset % frameSize);
-//                }
-//
-//                int chunkSize = (int) Math.min(remaining, frameEnd - currentOffset);
-//
-//                try {
-//                    // Use OpenSSL native cipher for encryption
-//                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
-//                    out.write(encrypted);
-//
-//                    currentOffset += chunkSize;
-//                    currentFrameOffset += chunkSize;
-//                    remaining -= chunkSize;
-//                    dataOffset += chunkSize;
-//                } catch (Throwable t) {
-//                    throw new IOException("Encryption failed at offset " + currentOffset, t);
-//                }
-//            }
+            // int remaining = length;
+            // int dataOffset = offset;
+            // long currentOffset = absoluteOffset;
+            //
+            // while (remaining > 0) {
+            // int frameNumber = (int) (currentOffset >>> EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER);
+            // long frameEnd = (long) (frameNumber + 1) << EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE_POWER;
+            //
+            // if (frameNumber != currentFrameNumber) {
+            // finalizeCurrentFrame();
+            // initializeFrameCipher(frameNumber, currentOffset % frameSize);
+            // }
+            //
+            // int chunkSize = (int) Math.min(remaining, frameEnd - currentOffset);
+            //
+            // try {
+            // // Use OpenSSL native cipher for encryption
+            // byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
+            // out.write(encrypted);
+            //
+            // currentOffset += chunkSize;
+            // currentFrameOffset += chunkSize;
+            // remaining -= chunkSize;
+            // dataOffset += chunkSize;
+            // } catch (Throwable t) {
+            // throw new IOException("Encryption failed at offset " + currentOffset, t);
+            // }
+            // }
         }
 
         private byte[] slice(byte[] data, int offset, int length) {
@@ -345,15 +344,15 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 // Lucene writes footer here.
                 // this will also flush the buffer.
 
-//                finalizeCurrentFrame();
-//                footer.setFrameCount(totalFrames);
-//
-//                // Serialize footer with file key for authentication
-//                byte[] fileKeyBytes = fileKey.getEncoded();
-//                out.write(footer.serialize(null, fileKeyBytes));
-//
-//                // Cache metadata for future reads
-//                encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
+                // finalizeCurrentFrame();
+                // footer.setFrameCount(totalFrames);
+                //
+                // // Serialize footer with file key for authentication
+                // byte[] fileKeyBytes = fileKey.getEncoded();
+                // out.write(footer.serialize(null, fileKeyBytes));
+                //
+                // // Cache metadata for future reads
+                // encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, this.masterKey);
 
                 // close() only flushes to the OS (kernel page cache). It does NOT guarantee
                 // * durability on disk (no fsync here). Lucene will provide the durability boundary by calling
@@ -454,18 +453,18 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
 
             try {
                 // Compute frame-specific IV
-//                byte[] frameIV = AesCipherFactory
-//                    .computeFrameIV(
-//                        masterKey,
-//                        footer.getMessageId(),
-//                        frameNumber,
-//                        offsetWithinFrame,
-//                        normalizedPath,
-//                        encryptionMetadataCache
-//                    );
+                // byte[] frameIV = AesCipherFactory
+                // .computeFrameIV(
+                // masterKey,
+                // footer.getMessageId(),
+                // frameNumber,
+                // offsetWithinFrame,
+                // normalizedPath,
+                // encryptionMetadataCache
+                // );
 
                 // Initialize new OpenSSL cipher context
-//                currentCipher = OpenSslNativeCipher.initGCMCipher(fileKey.getEncoded(), frameIV, offsetWithinFrame);
+                // currentCipher = OpenSslNativeCipher.initGCMCipher(fileKey.getEncoded(), frameIV, offsetWithinFrame);
 
             } catch (Throwable t) {
                 throw new RuntimeException("Failed to initialize frame cipher", t);

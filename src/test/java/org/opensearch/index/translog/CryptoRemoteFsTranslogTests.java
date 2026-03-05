@@ -5,14 +5,12 @@
 package org.opensearch.index.translog;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.BooleanSupplier;
@@ -34,7 +32,6 @@ import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.remote.RemoteTranslogTransferTracker;
 import org.opensearch.index.store.key.KeyResolver;
-import org.opensearch.index.translog.transfer.TranslogTransferManager;
 import org.opensearch.indices.RemoteStoreSettings;
 import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.repositories.blobstore.BlobStoreRepository;
@@ -146,48 +143,48 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
      */
     public void testConstructorSuccessfulInitialization() throws Exception {
         // ENCRYPTION DISABLED - Test commented out (causes assertion failures in TranslogTransferManager)
-        
-//        String translogUUID = Translog.createEmptyTranslog(tempDir, 0L, testShardId, mockPrimaryTermSupplier.getAsLong());
-//
-//        // Create the CryptoRemoteFsTranslog
-//        CryptoRemoteFsTranslog translog = new CryptoRemoteFsTranslog(
-//            mockConfig,
-//            translogUUID,
-//            mockDeletionPolicy,
-//            mockGlobalCheckpointSupplier,
-//            mockPrimaryTermSupplier,
-//            mockPersistedSequenceNumberConsumer,
-//            mockBlobStoreRepository,
-//            mockThreadPool,
-//            mockStartedPrimarySupplier,
-//            mockRemoteTranslogTransferTracker,
-//            mockRemoteStoreSettings,
-//            mockTranslogOperationHelper,
-//            keyResolver
-//        );
-//
-//        assertNotNull("CryptoRemoteFsTranslog should be created successfully", translog);
-//
-//        // Verify the CryptoChannelFactory is set
-//        Field channelFactoryField = Translog.class.getDeclaredField("channelFactory");
-//        channelFactoryField.setAccessible(true);
-//        ChannelFactory channelFactory = (ChannelFactory) channelFactoryField.get(translog);
-//        assertNotNull("ChannelFactory should not be null", channelFactory);
-//        assertTrue("ChannelFactory should be instance of CryptoChannelFactory", channelFactory instanceof CryptoChannelFactory);
-//
-//        // Verify the translogTransferManager has been replaced with DecryptingTranslogTransferManager
-//        Field transferManagerField = RemoteFsTranslog.class.getDeclaredField("translogTransferManager");
-//        transferManagerField.setAccessible(true);
-//        TranslogTransferManager transferManager = (TranslogTransferManager) transferManagerField.get(translog);
-//
-//        assertNotNull("TranslogTransferManager should not be null", transferManager);
-//        assertTrue(
-//            "TranslogTransferManager should be instance of DecryptingTranslogTransferManager",
-//            transferManager instanceof DecryptingTranslogTransferManager
-//        );
-//
-//        // Cleanup
-//        translog.close();
+
+        // String translogUUID = Translog.createEmptyTranslog(tempDir, 0L, testShardId, mockPrimaryTermSupplier.getAsLong());
+        //
+        // // Create the CryptoRemoteFsTranslog
+        // CryptoRemoteFsTranslog translog = new CryptoRemoteFsTranslog(
+        // mockConfig,
+        // translogUUID,
+        // mockDeletionPolicy,
+        // mockGlobalCheckpointSupplier,
+        // mockPrimaryTermSupplier,
+        // mockPersistedSequenceNumberConsumer,
+        // mockBlobStoreRepository,
+        // mockThreadPool,
+        // mockStartedPrimarySupplier,
+        // mockRemoteTranslogTransferTracker,
+        // mockRemoteStoreSettings,
+        // mockTranslogOperationHelper,
+        // keyResolver
+        // );
+        //
+        // assertNotNull("CryptoRemoteFsTranslog should be created successfully", translog);
+        //
+        // // Verify the CryptoChannelFactory is set
+        // Field channelFactoryField = Translog.class.getDeclaredField("channelFactory");
+        // channelFactoryField.setAccessible(true);
+        // ChannelFactory channelFactory = (ChannelFactory) channelFactoryField.get(translog);
+        // assertNotNull("ChannelFactory should not be null", channelFactory);
+        // assertTrue("ChannelFactory should be instance of CryptoChannelFactory", channelFactory instanceof CryptoChannelFactory);
+        //
+        // // Verify the translogTransferManager has been replaced with DecryptingTranslogTransferManager
+        // Field transferManagerField = RemoteFsTranslog.class.getDeclaredField("translogTransferManager");
+        // transferManagerField.setAccessible(true);
+        // TranslogTransferManager transferManager = (TranslogTransferManager) transferManagerField.get(translog);
+        //
+        // assertNotNull("TranslogTransferManager should not be null", transferManager);
+        // assertTrue(
+        // "TranslogTransferManager should be instance of DecryptingTranslogTransferManager",
+        // transferManager instanceof DecryptingTranslogTransferManager
+        // );
+        //
+        // // Cleanup
+        // translog.close();
     }
 
     public void testConstructorFailsWithNullKeyResolver() throws Exception {
@@ -270,64 +267,64 @@ public class CryptoRemoteFsTranslogTests extends OpenSearchTestCase {
      */
     public void testTranslogTransferManagerReplacedSuccessfully() throws Exception {
         // ENCRYPTION DISABLED - Test commented out (causes assertion failures in TranslogTransferManager)
-        
-//        // Create empty translog
-//        String translogUUID = Translog.createEmptyTranslog(tempDir, 0L, testShardId, mockPrimaryTermSupplier.getAsLong());
-//
-//        // Create the CryptoRemoteFsTranslog
-//        CryptoRemoteFsTranslog translog = new CryptoRemoteFsTranslog(
-//            mockConfig,
-//            translogUUID,
-//            mockDeletionPolicy,
-//            mockGlobalCheckpointSupplier,
-//            mockPrimaryTermSupplier,
-//            mockPersistedSequenceNumberConsumer,
-//            mockBlobStoreRepository,
-//            mockThreadPool,
-//            mockStartedPrimarySupplier,
-//            mockRemoteTranslogTransferTracker,
-//            mockRemoteStoreSettings,
-//            mockTranslogOperationHelper,
-//            keyResolver
-//        );
-//
-//        // Access the translogTransferManager field
-//        Field transferManagerField = RemoteFsTranslog.class.getDeclaredField("translogTransferManager");
-//        transferManagerField.setAccessible(true);
-//        TranslogTransferManager transferManager = (TranslogTransferManager) transferManagerField.get(translog);
-//
-//        // Verify it's the DecryptingTranslogTransferManager
-//        assertNotNull("TranslogTransferManager should not be null", transferManager);
-//        assertTrue(
-//            "TranslogTransferManager must be DecryptingTranslogTransferManager",
-//            transferManager instanceof DecryptingTranslogTransferManager
-//        );
-//
-//        // Verify the DecryptingTranslogTransferManager has the correct components
-//        DecryptingTranslogTransferManager decryptingManager = (DecryptingTranslogTransferManager) transferManager;
-//
-//        // Access private fields to verify configuration
-//        Field keyResolverField = DecryptingTranslogTransferManager.class.getDeclaredField("keyResolver");
-//        keyResolverField.setAccessible(true);
-//        KeyResolver managerKeyResolver = (KeyResolver) keyResolverField.get(decryptingManager);
-//
-//        assertNotNull("DecryptingTranslogTransferManager should have keyResolver", managerKeyResolver);
-//        assertEquals("KeyResolver should be the same instance", keyResolver, managerKeyResolver);
-//
-//        Field translogUUIDField = DecryptingTranslogTransferManager.class.getDeclaredField("translogUUID");
-//        translogUUIDField.setAccessible(true);
-//        String managerTranslogUUID = (String) translogUUIDField.get(decryptingManager);
-//
-//        assertNotNull("DecryptingTranslogTransferManager should have translogUUID", managerTranslogUUID);
-//        assertEquals("TranslogUUID should match", translogUUID, managerTranslogUUID);
-//
-//        Field cryptoFactoryField = DecryptingTranslogTransferManager.class.getDeclaredField("cryptoFactory");
-//        cryptoFactoryField.setAccessible(true);
-//        CryptoChannelFactory managerCryptoFactory = (CryptoChannelFactory) cryptoFactoryField.get(decryptingManager);
-//
-//        assertNotNull("DecryptingTranslogTransferManager should have cryptoFactory", managerCryptoFactory);
-//
-//        // Cleanup
-//        translog.close();
+
+        // // Create empty translog
+        // String translogUUID = Translog.createEmptyTranslog(tempDir, 0L, testShardId, mockPrimaryTermSupplier.getAsLong());
+        //
+        // // Create the CryptoRemoteFsTranslog
+        // CryptoRemoteFsTranslog translog = new CryptoRemoteFsTranslog(
+        // mockConfig,
+        // translogUUID,
+        // mockDeletionPolicy,
+        // mockGlobalCheckpointSupplier,
+        // mockPrimaryTermSupplier,
+        // mockPersistedSequenceNumberConsumer,
+        // mockBlobStoreRepository,
+        // mockThreadPool,
+        // mockStartedPrimarySupplier,
+        // mockRemoteTranslogTransferTracker,
+        // mockRemoteStoreSettings,
+        // mockTranslogOperationHelper,
+        // keyResolver
+        // );
+        //
+        // // Access the translogTransferManager field
+        // Field transferManagerField = RemoteFsTranslog.class.getDeclaredField("translogTransferManager");
+        // transferManagerField.setAccessible(true);
+        // TranslogTransferManager transferManager = (TranslogTransferManager) transferManagerField.get(translog);
+        //
+        // // Verify it's the DecryptingTranslogTransferManager
+        // assertNotNull("TranslogTransferManager should not be null", transferManager);
+        // assertTrue(
+        // "TranslogTransferManager must be DecryptingTranslogTransferManager",
+        // transferManager instanceof DecryptingTranslogTransferManager
+        // );
+        //
+        // // Verify the DecryptingTranslogTransferManager has the correct components
+        // DecryptingTranslogTransferManager decryptingManager = (DecryptingTranslogTransferManager) transferManager;
+        //
+        // // Access private fields to verify configuration
+        // Field keyResolverField = DecryptingTranslogTransferManager.class.getDeclaredField("keyResolver");
+        // keyResolverField.setAccessible(true);
+        // KeyResolver managerKeyResolver = (KeyResolver) keyResolverField.get(decryptingManager);
+        //
+        // assertNotNull("DecryptingTranslogTransferManager should have keyResolver", managerKeyResolver);
+        // assertEquals("KeyResolver should be the same instance", keyResolver, managerKeyResolver);
+        //
+        // Field translogUUIDField = DecryptingTranslogTransferManager.class.getDeclaredField("translogUUID");
+        // translogUUIDField.setAccessible(true);
+        // String managerTranslogUUID = (String) translogUUIDField.get(decryptingManager);
+        //
+        // assertNotNull("DecryptingTranslogTransferManager should have translogUUID", managerTranslogUUID);
+        // assertEquals("TranslogUUID should match", translogUUID, managerTranslogUUID);
+        //
+        // Field cryptoFactoryField = DecryptingTranslogTransferManager.class.getDeclaredField("cryptoFactory");
+        // cryptoFactoryField.setAccessible(true);
+        // CryptoChannelFactory managerCryptoFactory = (CryptoChannelFactory) cryptoFactoryField.get(decryptingManager);
+        //
+        // assertNotNull("DecryptingTranslogTransferManager should have cryptoFactory", managerCryptoFactory);
+        //
+        // // Cleanup
+        // translog.close();
     }
 }

@@ -4,8 +4,6 @@
  */
 package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.DIRECT_IO_ALIGNMENT;
-
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -96,7 +94,8 @@ public class DirectIOReaderUtil {
      * @return a memory segment containing the read data
      * @throws IOException if the read operation fails
      */
-    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena, int blockSize) throws IOException {
+    public static MemorySegment directIOReadAligned(FileChannel channel, long offset, long length, Arena arena, int blockSize)
+        throws IOException {
         int alignment = Math.max(blockSize, PanamaNativeAccess.getPageSize());
 
         // Require alignment to be a power of 2

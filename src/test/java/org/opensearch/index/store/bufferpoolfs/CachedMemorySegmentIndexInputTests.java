@@ -1635,7 +1635,6 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         input.close();
     }
 
-
     /**
      * Tests prefetch with various lengths doesn't fail.
      */
@@ -1691,21 +1690,21 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      */
     public void testPrefetchSkipsWhenFirstBlockCached() throws Exception {
         long fileLength = BLOCK_SIZE * 3;
-        
+
         // With cache-first optimization, loadForPrefetch checks cache internally
         // and returns empty map when all blocks are cached
         when(mockCache.loadForPrefetch(eq(testPath), eq(0L), eq(3L))).thenReturn(Collections.emptyMap());
-        
+
         CachedMemorySegmentIndexInput input = createInput(fileLength);
-        
+
         input.prefetch(0, BLOCK_SIZE * 3);
-        
+
         // Wait for async executor to complete
         Thread.sleep(100);
-        
+
         // Verify loadForPrefetch was called (it checks cache internally)
         verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
-        
+
         input.close();
     }
 
@@ -1714,22 +1713,22 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      */
     public void testPrefetchLoadsWhenFirstBlockNotCached() throws Exception {
         long fileLength = BLOCK_SIZE * 3;
-        
+
         // With cache-first optimization, loadForPrefetch checks cache internally
         // and returns map of loaded blocks
         Map<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> loadedBlocks = new HashMap<>();
         when(mockCache.loadForPrefetch(eq(testPath), eq(0L), eq(3L))).thenReturn(loadedBlocks);
-        
+
         CachedMemorySegmentIndexInput input = createInput(fileLength);
-        
+
         input.prefetch(0, BLOCK_SIZE * 3);
-        
+
         // Wait for async executor to complete
         Thread.sleep(100);
-        
+
         // Verify loadForPrefetch was called (it checks cache and loads internally)
         verify(mockCache, times(1)).loadForPrefetch(eq(testPath), eq(0L), eq(3L));
-        
+
         input.close();
     }
 
@@ -1741,16 +1740,10 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         setupOneBlock(block0);
 
-        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput.newInstance(
-            "test",
-            testPath,
-            fileLength,
-            mockCache,
-            mockReadaheadManager,
-            mockReadaheadContext,
-            mockTinyCache,
-            r -> { throw new java.util.concurrent.RejectedExecutionException("Executor rejected"); }
-        );
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache, r -> {
+                throw new java.util.concurrent.RejectedExecutionException("Executor rejected");
+            });
 
         // Should not throw exception
         input.prefetch(0, BLOCK_SIZE);

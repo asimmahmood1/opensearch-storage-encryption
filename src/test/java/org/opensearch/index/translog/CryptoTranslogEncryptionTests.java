@@ -156,66 +156,70 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     public void testTranslogDataIsActuallyEncrypted() throws IOException {
         // ENCRYPTION DISABLED - Test commented out
         logger.info("Skipping testTranslogDataIsActuallyEncrypted - encryption is disabled");
-        
-//        String testTranslogUUID = "test-encryption-uuid";
-//        CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
-//
-//        Path translogPath = tempDir.resolve("test-encryption.tlog");
-//
-//        // Test data that should be encrypted
-//        String sensitiveData =
-//            "{\"@timestamp\": 894069207, \"clientip\":\"192.168.1.1\", \"request\": \"GET /secret/data HTTP/1.1\", \"status\": 200}";
-//        byte[] testData = sensitiveData.getBytes(StandardCharsets.UTF_8);
-//
-//        // Write header + data using our crypto channel (with READ permission for round-trip verification)
-//        try (
-//            FileChannel cryptoChannel = channelFactory
-//                .open(translogPath, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
-//        ) {
-//
-//            // First write the header
-//            TranslogHeader header = new TranslogHeader(testTranslogUUID, 1L);
-//            header.write(cryptoChannel, false);
-//            int headerSize = header.sizeInBytes();
-//
-//            logger.info("Header size: {} bytes", headerSize);
-//
-//            // Now write data that should be encrypted (beyond header)
-//            ByteBuffer dataBuffer = ByteBuffer.wrap(testData);
-//            int bytesWritten = cryptoChannel.write(dataBuffer, headerSize);
-//
-//            assertEquals("Should write all test data", testData.length, bytesWritten);
-//        }
-//
-//        // CRITICAL: Read raw file content and verify data is encrypted (NOT readable)
-//        byte[] fileContent = Files.readAllBytes(translogPath);
-//        String fileContentString = new String(fileContent, StandardCharsets.UTF_8);
-//        String fileContentISO = new String(fileContent, StandardCharsets.ISO_8859_1);
-//
-//        logger.info("File size: {} bytes", fileContent.length);
-//        logger.info("File content UTF-8 (first 200 chars): {}", fileContentString.substring(0, Math.min(200, fileContentString.length())));
-//        logger.info("File content ISO-8859-1 (first 200 chars): {}", fileContentISO.substring(0, Math.min(200, fileContentISO.length())));
-//        logger.info("UUID in UTF-8: {}", fileContentString.contains(testTranslogUUID));
-//        logger.info("UUID in ISO-8859-1: {}", fileContentISO.contains(testTranslogUUID));
-//
-//        // Debug: print first 53 bytes (header) as hex
-//        StringBuilder hexHeader = new StringBuilder();
-//        for (int i = 0; i < Math.min(53, fileContent.length); i++) {
-//            hexHeader.append(String.format("%02X ", fileContent[i]));
-//        }
-//        logger.info("Header bytes (hex): {}", hexHeader.toString());
-//
-//        assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("192.168.1.1"));
-//
-//        assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("/secret/data"));
-//
-//        assertFalse("JSON structure found in plain text! File content: " + fileContentString, fileContentString.contains("\"clientip\""));
-//
-//        // Verify header is still readable (should be unencrypted)
-//        assertTrue(
-//            "Header should contain translog UUID",
-//            fileContentString.contains(testTranslogUUID) || fileContentISO.contains(testTranslogUUID)
-//        );
+
+        // String testTranslogUUID = "test-encryption-uuid";
+        // CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
+        //
+        // Path translogPath = tempDir.resolve("test-encryption.tlog");
+        //
+        // // Test data that should be encrypted
+        // String sensitiveData =
+        // "{\"@timestamp\": 894069207, \"clientip\":\"192.168.1.1\", \"request\": \"GET /secret/data HTTP/1.1\", \"status\": 200}";
+        // byte[] testData = sensitiveData.getBytes(StandardCharsets.UTF_8);
+        //
+        // // Write header + data using our crypto channel (with READ permission for round-trip verification)
+        // try (
+        // FileChannel cryptoChannel = channelFactory
+        // .open(translogPath, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE)
+        // ) {
+        //
+        // // First write the header
+        // TranslogHeader header = new TranslogHeader(testTranslogUUID, 1L);
+        // header.write(cryptoChannel, false);
+        // int headerSize = header.sizeInBytes();
+        //
+        // logger.info("Header size: {} bytes", headerSize);
+        //
+        // // Now write data that should be encrypted (beyond header)
+        // ByteBuffer dataBuffer = ByteBuffer.wrap(testData);
+        // int bytesWritten = cryptoChannel.write(dataBuffer, headerSize);
+        //
+        // assertEquals("Should write all test data", testData.length, bytesWritten);
+        // }
+        //
+        // // CRITICAL: Read raw file content and verify data is encrypted (NOT readable)
+        // byte[] fileContent = Files.readAllBytes(translogPath);
+        // String fileContentString = new String(fileContent, StandardCharsets.UTF_8);
+        // String fileContentISO = new String(fileContent, StandardCharsets.ISO_8859_1);
+        //
+        // logger.info("File size: {} bytes", fileContent.length);
+        // logger.info("File content UTF-8 (first 200 chars): {}", fileContentString.substring(0, Math.min(200,
+        // fileContentString.length())));
+        // logger.info("File content ISO-8859-1 (first 200 chars): {}", fileContentISO.substring(0, Math.min(200,
+        // fileContentISO.length())));
+        // logger.info("UUID in UTF-8: {}", fileContentString.contains(testTranslogUUID));
+        // logger.info("UUID in ISO-8859-1: {}", fileContentISO.contains(testTranslogUUID));
+        //
+        // // Debug: print first 53 bytes (header) as hex
+        // StringBuilder hexHeader = new StringBuilder();
+        // for (int i = 0; i < Math.min(53, fileContent.length); i++) {
+        // hexHeader.append(String.format("%02X ", fileContent[i]));
+        // }
+        // logger.info("Header bytes (hex): {}", hexHeader.toString());
+        //
+        // assertFalse("Sensitive data found in plain text! File content: " + fileContentString, fileContentString.contains("192.168.1.1"));
+        //
+        // assertFalse("Sensitive data found in plain text! File content: " + fileContentString,
+        // fileContentString.contains("/secret/data"));
+        //
+        // assertFalse("JSON structure found in plain text! File content: " + fileContentString,
+        // fileContentString.contains("\"clientip\""));
+        //
+        // // Verify header is still readable (should be unencrypted)
+        // assertTrue(
+        // "Header should contain translog UUID",
+        // fileContentString.contains(testTranslogUUID) || fileContentISO.contains(testTranslogUUID)
+        // );
     }
 
     /**
@@ -266,10 +270,10 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         }
 
         // ENCRYPTION DISABLED - Verification commented out
-//        // Verify file content is still encrypted on disk
-//        byte[] rawFileContent = Files.readAllBytes(translogPath);
-//        String rawContent = new String(rawFileContent, StandardCharsets.UTF_8);
-//
-//        assertFalse("Data should be encrypted on disk", rawContent.contains("sensitive document data"));
+        // // Verify file content is still encrypted on disk
+        // byte[] rawFileContent = Files.readAllBytes(translogPath);
+        // String rawContent = new String(rawFileContent, StandardCharsets.UTF_8);
+        //
+        // assertFalse("Data should be encrypted on disk", rawContent.contains("sensitive document data"));
     }
 }

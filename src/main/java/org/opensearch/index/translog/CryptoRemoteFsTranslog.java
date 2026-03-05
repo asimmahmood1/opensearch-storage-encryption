@@ -144,10 +144,7 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
             .build();
         BlobPath mdPath = pathStrategy.generatePath(mdPathInput);
 
-        BlobStoreTransferService transferService = new BlobStoreTransferService(
-            blobStoreRepository.blobStore(),
-            threadPool
-        );
+        BlobStoreTransferService transferService = new BlobStoreTransferService(blobStoreRepository.blobStore(), threadPool);
 
         return new DecryptingTranslogTransferManager(
             shardId,

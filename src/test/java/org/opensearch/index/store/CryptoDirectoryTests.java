@@ -254,7 +254,7 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
             .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, false)
             .build();
         CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(settings);
-//        assertTrue("Directory factories should be empty when disabled", plugin.getDirectoryFactories().isEmpty());
+        // assertTrue("Directory factories should be empty when disabled", plugin.getDirectoryFactories().isEmpty());
         assertNotNull("CryptoFS factory should be registered", plugin.getDirectoryFactories().get("cryptofs"));
 
     }

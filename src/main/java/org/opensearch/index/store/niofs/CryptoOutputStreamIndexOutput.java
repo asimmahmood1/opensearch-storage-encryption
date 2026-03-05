@@ -113,7 +113,7 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
             this.encryptionMetadataCache = encryptionMetadataCache;
 
             // Initialize first frame cipher
-//            initializeFrameCipher(0, 0);
+            // initializeFrameCipher(0, 0);
         }
 
         @Override
@@ -159,33 +159,33 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
 
         private void processAndWrite(byte[] data, int offset, int length) throws IOException {
             out.write(data, offset, length);
-//            int remaining = length;
-//            int dataOffset = offset;
-//
-//            while (remaining > 0) {
-//                // Check if we need to start a new frame (using bit operations)
-//                int frameNumber = (int) (streamOffset >>> frameSizePower);
-//                if (frameNumber != currentFrameNumber) {
-//                    finalizeCurrentFrame();
-//                    totalFrames = Math.max(totalFrames, frameNumber + 1);
-//                    initializeFrameCipher(frameNumber, streamOffset & frameSizeMask);
-//                }
-//
-//                // Calculate how much we can write in current frame
-//                int chunkSize = (int) Math.min(remaining, (frameSizeMask + 1) - (streamOffset & frameSizeMask));
-//
-//                try {
-//                    byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
-//                    out.write(encrypted);
-//
-//                    streamOffset += chunkSize;
-//                    currentFrameOffset += chunkSize;
-//                    remaining -= chunkSize;
-//                    dataOffset += chunkSize;
-//                } catch (Throwable t) {
-//                    throw new IOException("Encryption failed at offset " + streamOffset, t);
-//                }
-//            }
+            // int remaining = length;
+            // int dataOffset = offset;
+            //
+            // while (remaining > 0) {
+            // // Check if we need to start a new frame (using bit operations)
+            // int frameNumber = (int) (streamOffset >>> frameSizePower);
+            // if (frameNumber != currentFrameNumber) {
+            // finalizeCurrentFrame();
+            // totalFrames = Math.max(totalFrames, frameNumber + 1);
+            // initializeFrameCipher(frameNumber, streamOffset & frameSizeMask);
+            // }
+            //
+            // // Calculate how much we can write in current frame
+            // int chunkSize = (int) Math.min(remaining, (frameSizeMask + 1) - (streamOffset & frameSizeMask));
+            //
+            // try {
+            // byte[] encrypted = OpenSslNativeCipher.encryptUpdate(currentCipher, slice(data, dataOffset, chunkSize));
+            // out.write(encrypted);
+            //
+            // streamOffset += chunkSize;
+            // currentFrameOffset += chunkSize;
+            // remaining -= chunkSize;
+            // dataOffset += chunkSize;
+            // } catch (Throwable t) {
+            // throw new IOException("Encryption failed at offset " + streamOffset, t);
+            // }
+            // }
         }
 
         private byte[] slice(byte[] data, int offset, int length) {
@@ -207,15 +207,15 @@ public final class CryptoOutputStreamIndexOutput extends OutputStreamIndexOutput
                 flushBuffer();
                 // Lucene writes footer here.
                 // this will also flush the buffer.
-                
+
                 // Encryption disabled - no footer needed
-//                finalizeCurrentFrame();
-//                footer.setFrameCount(totalFrames);
-//                byte[] fileKeyBytes = fileKey.getEncoded();
-//                out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
-//                if (normalizedFilePath != null) {
-//                    encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
-//                }
+                // finalizeCurrentFrame();
+                // footer.setFrameCount(totalFrames);
+                // byte[] fileKeyBytes = fileKey.getEncoded();
+                // out.write(footer.serialize(java.nio.file.Paths.get(normalizedFilePath), fileKeyBytes));
+                // if (normalizedFilePath != null) {
+                // encryptionMetadataCache.getOrLoadMetadata(normalizedFilePath, footer, this.masterKey);
+                // }
 
                 super.close();
 

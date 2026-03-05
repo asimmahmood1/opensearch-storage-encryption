@@ -23,8 +23,6 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
-import org.opensearch.common.unit.TimeValue;
-import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -44,7 +42,6 @@ import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
-import org.opensearch.index.store.rest.RestClearBufferPoolCacheAction;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
 import org.opensearch.index.store.rest.RestUnregisterCryptoAction;
@@ -211,10 +208,10 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     @Override
     public Map<String, DirectoryFactory> getDirectoryFactories() {
-//        if (isDisabled()) {
-//            log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
-//            return Collections.emptyMap();
-//        }
+        // if (isDisabled()) {
+        // log.debug("Crypto Directory Plugin is disabled. No directory factories will be registered.");
+        // return Collections.emptyMap();
+        // }
         log.debug("Crypto Directory Plugin is enabled with crypto plugin {}. Registering cryptofs directory factory.", isDisabled());
         return Collections.singletonMap(CryptoDirectoryFactory.STORE_TYPE, new CryptoDirectoryFactory());
     }
@@ -225,7 +222,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     @Override
     public Optional<EngineFactory> getEngineFactory(IndexSettings indexSettings) {
         if (isDisabled()) {
-//            return Optional.empty();
+            // return Optional.empty();
             log.warn("Using plugin with crypto disabled");
         }
 

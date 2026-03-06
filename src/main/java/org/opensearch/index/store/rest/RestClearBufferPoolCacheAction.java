@@ -59,7 +59,7 @@ public class RestClearBufferPoolCacheAction extends BaseRestHandler {
         long initialSize = cache.getCacheSize();
 
         // Clear entire cache safely
-        cache.clearSafely();
+        //cache.clearSafely();
 
         long finalSize = cache.getCacheSize();
         long cleared = initialSize - finalSize;
@@ -73,7 +73,7 @@ public class RestClearBufferPoolCacheAction extends BaseRestHandler {
         builder.field("cache_stats", stats);
         builder.endObject();
 
-        LOGGER.info("Buffer pool cache cleared safely, stats={}", stats);
+        LOGGER.info("Buffer pool cache NOT cleared, stats={}", stats);
         return channel -> { channel.sendResponse(new BytesRestResponse(RestStatus.OK, builder)); };
     }
 }

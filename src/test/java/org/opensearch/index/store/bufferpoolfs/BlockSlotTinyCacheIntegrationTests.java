@@ -298,11 +298,6 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         private final AtomicInteger poolIndex = new AtomicInteger(0);
         private final AtomicInteger evictionCounter = new AtomicInteger(0);
 
-        @Override
-        public void clearSafely() {
-            clear();
-        }
-
         public SimulatedBlockCache(Arena arena, int poolSize) {
             this.arena = arena;
             this.poolSize = poolSize;
@@ -419,8 +414,8 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         }
 
         @Override
-        public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-            return loadAllBlocks(filePath, startOffset, blockCount);
+        public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+            loadAllBlocks(filePath, startOffset, blockCount);
         }
 
         @Override

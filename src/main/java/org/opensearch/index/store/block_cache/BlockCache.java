@@ -81,12 +81,6 @@ public interface BlockCache<T> {
     void clear();
 
     /**
-     * Clear all blocks from the cache that are not currently in use (refCount == 1).
-     * This is a safer alternative to clear() that avoids clearing blocks that are actively being used.
-     */
-    void clearSafely();
-
-    /**
      * Load multiple blocks for prefetch with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
      * Checks cache first and only loads missing blocks, combining consecutive ranges into single bulk loads.
@@ -94,10 +88,9 @@ public interface BlockCache<T> {
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return count of blocks that were successfully loaded into the cache (excludes already-cached blocks)
      * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
-    long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+    void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.

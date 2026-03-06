@@ -40,57 +40,25 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
-    private final ConcurrentMap<BlockCacheKey, Boolean> prefetchCache;
-    private final java.util.concurrent.Executor prefetchExecutor;
+    private final PrefetchTracker prefetchTracker;
 
     /**
-     * Constructs a new CaffeineBlockCache with the specified cache and block loader.
+     * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch tracker.
      *
      * @param cache the underlying Caffeine cache instance
      * @param blockLoader the loader used to load blocks when cache misses occur
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
-     */
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
-        this(cache, blockLoader, maxBlocks, null, null);
-    }
-
-    /**
-     * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch cache.
-     *
-     * @param cache the underlying Caffeine cache instance
-     * @param blockLoader the loader used to load blocks when cache misses occur
-     * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
-     * @param prefetchCache optional shared cache for prefetch deduplication across all files
+     * @param prefetchTracker tracker for prefetch deduplication, stats, and async execution
      */
     public CaffeineBlockCache(
         Cache<BlockCacheKey, BlockCacheValue<T>> cache,
         BlockLoader<V> blockLoader,
         long maxBlocks,
-        ConcurrentMap<BlockCacheKey, Boolean> prefetchCache
-    ) {
-        this(cache, blockLoader, maxBlocks, prefetchCache, null);
-    }
-
-    /**
-     * Constructs a new CaffeineBlockCache with the specified cache, block loader, prefetch cache, and executor.
-     *
-     * @param cache the underlying Caffeine cache instance
-     * @param blockLoader the loader used to load blocks when cache misses occur
-     * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
-     * @param prefetchCache optional shared cache for prefetch deduplication across all files
-     * @param prefetchExecutor optional executor for async prefetch operations
-     */
-    public CaffeineBlockCache(
-        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
-        BlockLoader<V> blockLoader,
-        long maxBlocks,
-        ConcurrentMap<BlockCacheKey, Boolean> prefetchCache,
-        java.util.concurrent.Executor prefetchExecutor
+        PrefetchTracker prefetchTracker
     ) {
         this.blockLoader = blockLoader;
         this.cache = cache;
-        this.prefetchCache = prefetchCache;
-        this.prefetchExecutor = prefetchExecutor;
+        this.prefetchTracker = prefetchTracker;
     }
 
     @Override
@@ -183,11 +151,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         if (!keysToInvalidate.isEmpty()) {
             cache.invalidateAll(keysToInvalidate);
         }
-
-        // Clear prefetch cache entries for this file
-        if (prefetchCache != null) {
-            prefetchCache.keySet().removeIf(key -> key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalized));
-        }
     }
 
     @Override
@@ -239,52 +202,51 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return count of blocks that were loaded (not including already-cached blocks)
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public long loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-        if (prefetchExecutor != null) {
-            // Async execution for prefetch
-            try {
-                prefetchExecutor.execute(() -> {
-                    try {
-                        loadMissingBlocksSync(filePath, startOffset, blockCount);
-                    } catch (Exception e) {
-                        LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
-                    }
-                });
-            } catch (Exception e) {
-                LOGGER.info("prefetch task rejected: path={} offset={} count={}", filePath, startOffset, blockCount, e.getMessage());
-
-            }
-            return 0;
-        } else {
-            // Sync execution for regular loads
-            return loadMissingBlocksSync(filePath, startOffset, blockCount);
+    public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        prefetchTracker.recordLoadMissingBlocksCall(blockCount);
+        try {
+            prefetchTracker.execute(() -> {
+                try {
+                    loadMissingBlocksSync(filePath, startOffset, blockCount);
+                } catch (Exception e) {
+                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
+                }
+            });
+        } catch (Exception e) {
+            LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
         }
     }
 
-    private long loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
         long totalLoaded = 0;
 
         // Check which blocks are already cached
         FileBlockCacheKey[] missingKeys = new FileBlockCacheKey[(int) blockCount];
         int missingCount = 0;
+        long cacheHitCount = 0;
 
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
             FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
             // check if this block is already in progress
-            if (prefetchCache == null || prefetchCache.putIfAbsent(key, Boolean.TRUE) == null) {
+            if (prefetchTracker.putIfAbsent(key)) {
                 if (cache.getIfPresent(key) == null) {
                     missingKeys[missingCount++] = key;
+                } else {
+                    cacheHitCount++;
                 }
             }
         }
 
+        if (cacheHitCount > 0) {
+            prefetchTracker.recordCacheHits(cacheHitCount);
+        }
+
         if (missingCount == 0) {
-            return totalLoaded; // All blocks already cached
+            return; // All blocks already cached
         }
 
         // Load consecutive ranges
@@ -302,17 +264,15 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
             totalLoaded += loadedFor;
 
-            // Remove loaded blocks from prefetch cache
-            if (prefetchCache != null) {
-                for (int i = 0; i < rangeLength; i++) {
-                    prefetchCache.remove(missingKeys[rangeStart + i]);
-                }
+            // Remove loaded blocks from prefetch tracker
+            for (int i = 0; i < rangeLength; i++) {
+                prefetchTracker.remove(missingKeys[rangeStart + i]);
             }
 
             rangeStart += rangeLength;
         }
 
-        return totalLoaded;
+        prefetchTracker.recordBlocksLoaded(totalLoaded);
     }
 
     /**
@@ -400,6 +360,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
+    @Override
+    public String prefetchStats() {
+        return prefetchTracker.stats();
+    }
+
     /**
      * Get the underlying Caffeine cache instance.
      * This is used for sharing the cache storage across multiple BlockCache instances
@@ -424,6 +389,16 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 stats.loadCount(),
                 stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
+            );
+        CryptoMetricsService
+            .getInstance()
+            .recordPrefetchStats(
+                prefetchTracker.getCalls(),
+                prefetchTracker.getBlocksRequested(),
+                prefetchTracker.getBlocksLoaded(),
+                prefetchTracker.getBlocksDeduped(),
+                prefetchTracker.getBlocksCacheHit(),
+                prefetchTracker.size()
             );
     }
 

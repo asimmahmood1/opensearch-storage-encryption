@@ -31,6 +31,7 @@ plugins {
     id 'idea'
     id 'jacoco'
     id 'com.diffplug.spotless' version '6.25.0'
+    id 'me.champeau.jmh' version '0.7.2'
 }
 
 apply plugin: 'opensearch.opensearchplugin'
@@ -71,6 +72,7 @@ dependencies {
     internalClusterTestImplementation "org.opensearch.plugin:crypto-kms:${opensearch_version}"
 
     implementation 'com.github.ben-manes.caffeine:caffeine:3.0.0'
+    jmhImplementation "org.opensearch:opensearch:${opensearch_version}"
     api "io.netty:netty-buffer:4.2.5.Final"
     api "io.netty:netty-transport:4.2.5.Final"
     api "io.netty:netty-transport-native-unix-common:4.2.5.Final"
@@ -196,6 +198,21 @@ task allTests {
     dependsOn test, internalClusterTest, yamlRestTest
     group = 'Verification'
     description = 'Runs all tests (Unit, Integration, and YAML)'
+}
+
+jmh {
+    jmhVersion = '1.37'
+    includeTests = false
+    duplicateClassesStrategy = DuplicatesStrategy.WARN
+    jvmArgs = [
+        '--enable-native-access=ALL-UNNAMED',
+        '--enable-preview',
+        '--add-opens=java.base/java.nio=ALL-UNNAMED'
+    ]
+    fork = 1
+    warmupIterations = 2
+    iterations = 3
+    timeUnit = 'ms'
 }
 
 spotless {

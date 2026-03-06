@@ -25,44 +25,44 @@ import org.openjdk.jmh.infra.Blackhole;
  */
 @State(Scope.Benchmark)
 public class MixedWorkloadBenchmark extends PrefetchBenchmarkBase {
-    
-    @Param({"0.2", "0.5", "0.8"})
+
+    @Param({ "0.2", "0.5", "0.8" })
     private double prefetchRatio;
-    
+
     @Setup(Level.Trial)
     public void setupBenchmark() throws Exception {
         super.setup();
     }
-    
+
     @Setup(Level.Iteration)
     public void resetIterationMetrics() {
         resetMetrics();
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(4)
     public void mixedWorkload_4Threads(Blackhole bh) throws IOException {
         mixedOperation(bh);
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(8)
     public void mixedWorkload_8Threads(Blackhole bh) throws IOException {
         mixedOperation(bh);
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(16)
     public void mixedWorkload_16Threads(Blackhole bh) throws IOException {
         mixedOperation(bh);
     }
-    
+
     private void mixedOperation(Blackhole bh) throws IOException {
         ThreadLocalRandom random = ThreadLocalRandom.current();
-        
+
         if (random.nextDouble() < prefetchRatio) {
             // Prefetch operation
             long offset;
@@ -75,22 +75,22 @@ public class MixedWorkloadBenchmark extends PrefetchBenchmarkBase {
                 offset = random.nextLong(FILE_SIZE - 64 * 1024);
             }
             offset = getBlockAlignedOffset(offset);
-            
+
             long blockCount = 8;
             totalPrefetchRequests.addAndGet(blockCount);
-            long loaded = blockCache.loadMissingBlocks(testFile, offset, blockCount);
-            bh.consume(loaded);
+            blockCache.loadMissingBlocks(testFile, offset, blockCount);
+            bh.consume(prefetchTracker.getBlocksLoaded());
         } else {
             // Regular read operation
             try (IndexInput input = directory.openInput("test.dat", org.apache.lucene.store.IOContext.DEFAULT)) {
                 long offset = random.nextLong(FILE_SIZE - 1024);
                 input.seek(offset);
-                
+
                 // Read some data
                 byte b = input.readByte();
                 int i = input.readInt();
                 long l = input.readLong();
-                
+
                 bh.consume(b);
                 bh.consume(i);
                 bh.consume(l);

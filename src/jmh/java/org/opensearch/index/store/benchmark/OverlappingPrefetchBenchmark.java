@@ -24,16 +24,16 @@ import org.openjdk.jmh.infra.Blackhole;
  */
 @State(Scope.Benchmark)
 public class OverlappingPrefetchBenchmark extends PrefetchBenchmarkBase {
-    
-    @Param({"50", "75", "100"})
+
+    @Param({ "50", "75", "100" })
     private int overlapPercent;
-    
+
     private static final long[] SHARED_OFFSETS = new long[100];
-    
+
     @Setup(Level.Trial)
     public void setupBenchmark() throws Exception {
         super.setup();
-        
+
         // Pre-generate shared offsets for overlap
         ThreadLocalRandom random = ThreadLocalRandom.current();
         for (int i = 0; i < SHARED_OFFSETS.length; i++) {
@@ -41,43 +41,43 @@ public class OverlappingPrefetchBenchmark extends PrefetchBenchmarkBase {
             SHARED_OFFSETS[i] = getBlockAlignedOffset(offset);
         }
     }
-    
+
     @Setup(Level.Iteration)
     public void resetIterationMetrics() {
         resetMetrics();
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(4)
     public void overlappingPrefetch_4Threads(Blackhole bh) throws IOException {
         prefetchOverlapping(bh);
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(8)
     public void overlappingPrefetch_8Threads(Blackhole bh) throws IOException {
         prefetchOverlapping(bh);
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(16)
     public void overlappingPrefetch_16Threads(Blackhole bh) throws IOException {
         prefetchOverlapping(bh);
     }
-    
+
     @Benchmark
     @BenchmarkMode(Mode.Throughput)
     @Threads(32)
     public void overlappingPrefetch_32Threads(Blackhole bh) throws IOException {
         prefetchOverlapping(bh);
     }
-    
+
     private void prefetchOverlapping(Blackhole bh) throws IOException {
         ThreadLocalRandom random = ThreadLocalRandom.current();
-        
+
         long offset;
         if (random.nextInt(100) < overlapPercent) {
             // Use shared offset (overlap)
@@ -87,12 +87,12 @@ public class OverlappingPrefetchBenchmark extends PrefetchBenchmarkBase {
             offset = random.nextLong(FILE_SIZE - 64 * 1024);
             offset = getBlockAlignedOffset(offset);
         }
-        
+
         // Prefetch 8 blocks (64KB)
         long blockCount = 8;
         totalPrefetchRequests.addAndGet(blockCount);
-        
-        long loaded = blockCache.loadMissingBlocks(testFile, offset, blockCount);
-        bh.consume(loaded);
+
+        blockCache.loadMissingBlocks(testFile, offset, blockCount);
+        bh.consume(prefetchTracker.getBlocksLoaded());
     }
 }

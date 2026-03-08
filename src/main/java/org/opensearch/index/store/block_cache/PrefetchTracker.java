@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.block_cache;
 
-import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -62,10 +61,6 @@ public class PrefetchTracker {
         inflight.remove(key);
     }
 
-    public void removeByFile(Path normalizedPath) {
-        inflight.keySet().removeIf(key -> key instanceof FileBlockCacheKey fk && fk.filePath().equals(normalizedPath));
-    }
-
     public int size() {
         return inflight.size();
     }
@@ -92,11 +87,11 @@ public class PrefetchTracker {
     }
 
     public String stats() {
-        long calls = loadMissingBlocksCalls.getAndSet(0);
-        long requested = blocksRequested.getAndSet(0);
-        long loaded = blocksLoaded.getAndSet(0);
-        long deduped = blocksDeduped.getAndSet(0);
-        long cacheHit = blocksCacheHit.getAndSet(0);
+        long calls = loadMissingBlocksCalls.get();
+        long requested = blocksRequested.get();
+        long loaded = blocksLoaded.get();
+        long deduped = blocksDeduped.get();
+        long cacheHit = blocksCacheHit.get();
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
@@ -132,7 +127,7 @@ public class PrefetchTracker {
     }
 
     // Testing only
-    public void resetStats() {
+    void resetStats() {
         loadMissingBlocksCalls.set(0);
         blocksRequested.set(0);
         blocksLoaded.set(0);

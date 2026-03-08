@@ -9,9 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.concurrent.ConcurrentMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -177,24 +174,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         cache.invalidateAll();
     }
 
-    @Override
-    public void clearSafely() {
-        long initialSize = cache.estimatedSize();
-        ConcurrentMap<BlockCacheKey, BlockCacheValue<T>> map = cache.asMap();
-        Set<BlockCacheKey> keys = new HashSet<>();
-        map.forEach((k, v) -> {
-            if (v.getRefCount() == 1) {
-                keys.add(k);
-            }
-        });
-        for (BlockCacheKey key : keys) {
-            cache.invalidate(key);
-        }
-        long newSize = initialSize - cache.estimatedSize();
-        LOGGER.info("Total values removed from buffer cache: {} expected to be removed {}", newSize, keys.size());
-
-    }
-
     /**
      * Bulk load multiple blocks efficiently using a single I/O operation.
      * Checks cache first and only loads missing blocks, combining consecutive ranges.
@@ -236,6 +215,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 if (cache.getIfPresent(key) == null) {
                     missingKeys[missingCount++] = key;
                 } else {
+                    prefetchTracker.remove(key);
                     cacheHitCount++;
                 }
             }
@@ -358,11 +338,6 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
             );
-    }
-
-    @Override
-    public String prefetchStats() {
-        return prefetchTracker.stats();
     }
 
     /**

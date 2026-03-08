@@ -99,6 +99,4 @@ public interface BlockCacheValue<T> extends AutoCloseable {
      * @return current generation counter value
      */
     int getGeneration();
-
-    int getRefCount();
 }

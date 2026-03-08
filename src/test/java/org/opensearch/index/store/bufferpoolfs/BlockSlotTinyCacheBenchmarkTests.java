@@ -52,11 +52,6 @@ public class BlockSlotTinyCacheBenchmarkTests {
         private final AtomicInteger generation = new AtomicInteger(0);
 
         @Override
-        public void clearSafely() {
-            cache.clear();
-        }
-
-        @Override
         public BlockCacheValue<RefCountedMemorySegment> get(org.opensearch.index.store.block_cache.BlockCacheKey key) {
             FileBlockCacheKey fileKey = (FileBlockCacheKey) key;
             return cache.computeIfAbsent(fileKey.fileOffset(), offset -> {
@@ -170,11 +165,6 @@ public class BlockSlotTinyCacheBenchmarkTests {
 
         MockBlockCacheValue(RefCountedMemorySegment segment) {
             this.segment = segment;
-        }
-
-        @Override
-        public int getRefCount() {
-            return segment.getRefCount();
         }
 
         @Override

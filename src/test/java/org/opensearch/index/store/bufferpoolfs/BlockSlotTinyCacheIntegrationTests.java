@@ -298,11 +298,6 @@ public class BlockSlotTinyCacheIntegrationTests extends OpenSearchTestCase {
         private final AtomicInteger poolIndex = new AtomicInteger(0);
         private final AtomicInteger evictionCounter = new AtomicInteger(0);
 
-        @Override
-        public void clearSafely() {
-            clear();
-        }
-
         public SimulatedBlockCache(Arena arena, int poolSize) {
             this.arena = arena;
             this.poolSize = poolSize;

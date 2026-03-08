@@ -60,6 +60,10 @@ public class DedupOverheadBenchmark {
     @Param({ "true", "false" })
     private boolean useTracker;
 
+    @Param({ "4", "16", "32" })
+    private int prefetchThreads;
+
+
     private Path tempDir;
     private Path testFile;
     private Pool<RefCountedMemorySegment> pool;
@@ -76,7 +80,7 @@ public class DedupOverheadBenchmark {
 
         pool = new MemorySegmentPool(50L * 1024 * 1024, BLOCK_SIZE);
 
-        executor = Executors.newFixedThreadPool(32, r -> {
+        executor = Executors.newFixedThreadPool(prefetchThreads, r -> {
             Thread t = new Thread(r, "prefetch-worker");
             t.setDaemon(true);
             return t;

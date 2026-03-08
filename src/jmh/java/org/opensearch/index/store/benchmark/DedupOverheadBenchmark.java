@@ -4,9 +4,8 @@
  */
 package org.opensearch.index.store.benchmark;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -23,36 +22,24 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.infra.Blackhole;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
-import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_cache.PrefetchTracker;
-import org.opensearch.index.store.block_loader.BlockLoader;
-import org.opensearch.index.store.pool.MemorySegmentPool;
-import org.opensearch.index.store.pool.Pool;
-
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 
 /**
- * Benchmark measuring PrefetchTracker ConcurrentHashMap dedup overhead.
- *
- * Compares throughput with and without dedup checks at varying duplicate rates.
- * Load calls are mocked with a 5ms sleep to simulate I/O latency.
- *
- * Parameters:
- * - duplicatePercent: 0 (pure overhead), 50, 90 (dedup benefit)
- * - useTracker: true (real ConcurrentHashMap dedup) vs false (no-op, always loads)
- * - Thread counts: 4, 16, 32
+ * Measures PrefetchTracker ConcurrentHashMap dedup contention.
+ * JMH threads submit work via prefetchTracker.execute(); worker threads
+ * contend on putIfAbsent/remove with a 5ms simulated load.
+ * Duplicates always hit the same fixed offset for maximum contention.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
 public class DedupOverheadBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
-    private static final int BLOCKS_PER_REQUEST = 8;
+    private static final int BLOCKS_PER_REQUEST = 2;
     private static final long MAX_OFFSET = 100L * 1024 * 1024;
-    private static final int SHARED_OFFSET_COUNT = 100;
+    private static final long SHARED_OFFSET = 0L;
 
     @Param({ "0", "50", "90" })
     private int duplicatePercent;
@@ -61,124 +48,65 @@ public class DedupOverheadBenchmark {
     private boolean useTracker;
 
     @Param({ "4", "16", "32" })
-    private int prefetchThreads;
+    private int workerThreads;
 
-
-    private Path tempDir;
     private Path testFile;
-    private Pool<RefCountedMemorySegment> pool;
-    private ExecutorService executor;
     private PrefetchTracker prefetchTracker;
-    private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
-    private long[] sharedOffsets;
+    private ExecutorService executor;
 
     @Setup(Level.Trial)
-    public void setup() throws Exception {
-        tempDir = Files.createTempDirectory("dedup-benchmark");
-        testFile = tempDir.resolve("test.dat");
-        Files.createFile(testFile);
-
-        pool = new MemorySegmentPool(50L * 1024 * 1024, BLOCK_SIZE);
-
-        executor = Executors.newFixedThreadPool(prefetchThreads, r -> {
+    public void setup() {
+        testFile = Path.of("/tmp/dedup-benchmark-dummy.dat");
+        executor = Executors.newFixedThreadPool(workerThreads, r -> {
             Thread t = new Thread(r, "prefetch-worker");
             t.setDaemon(true);
             return t;
         });
-
         prefetchTracker = useTracker ? new PrefetchTracker(executor) : new NoOpPrefetchTracker(executor);
-
-        Cache<BlockCacheKey, org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
-            .newBuilder()
-            .maximumSize(1_000)
-            .removalListener(
-                (
-                    BlockCacheKey key,
-                    org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment> value,
-                    com.github.benmanes.caffeine.cache.RemovalCause cause) -> {
-                    if (value != null) {
-                        try {
-                            value.close();
-                        } catch (Exception e) { /* ignore */ }
-                    }
-                }
-            )
-            .build();
-
-        blockCache = new CaffeineBlockCache<>(caffeineCache, new SleepingBlockLoader(pool), 1_000, prefetchTracker);
-
-        sharedOffsets = new long[SHARED_OFFSET_COUNT];
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
-        for (int i = 0; i < SHARED_OFFSET_COUNT; i++) {
-            sharedOffsets[i] = (rng.nextLong(MAX_OFFSET / BLOCK_SIZE)) * BLOCK_SIZE;
-        }
     }
 
     @Setup(Level.Iteration)
     public void resetIteration() {
-        blockCache.clear();
         prefetchTracker.clear();
         prefetchTracker.resetStats();
-    }
-
-    @TearDown(Level.Iteration)
-    public void reportIteration() {
-        System.out.println(prefetchTracker.stats());
     }
 
     @TearDown(Level.Trial)
     public void tearDown() throws Exception {
         if (executor != null) {
             executor.shutdown();
-            executor.awaitTermination(10, TimeUnit.SECONDS);
+            executor.awaitTermination(30, TimeUnit.SECONDS);
         }
-        if (pool != null) {
-            pool.close();
-        }
-        if (tempDir != null) {
-            Files.walk(tempDir).sorted((a, b) -> b.compareTo(a)).forEach(p -> {
-                try {
-                    Files.deleteIfExists(p);
-                } catch (IOException e) { /* ignore */ }
-            });
-        }
-    }
-
-    @Benchmark
-    @Threads(4)
-    public void dedup_4Threads(Blackhole bh) throws IOException {
-        runPrefetch(bh);
-    }
-
-    @Benchmark
-    @Threads(16)
-    public void dedup_16Threads(Blackhole bh) throws IOException {
-        runPrefetch(bh);
     }
 
     @Benchmark
     @Threads(32)
-    public void dedup_32Threads(Blackhole bh) throws IOException {
-        runPrefetch(bh);
-    }
-
-    private void runPrefetch(Blackhole bh) throws IOException {
+    public void dedup(Blackhole bh) throws InterruptedException {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
+        boolean isDuplicate = rng.nextInt(100) < duplicatePercent;
+        long offset = isDuplicate ? SHARED_OFFSET : (rng.nextLong(MAX_OFFSET / BLOCK_SIZE)) * BLOCK_SIZE;
 
-        long offset;
-        if (rng.nextInt(100) < duplicatePercent) {
-            offset = sharedOffsets[rng.nextInt(SHARED_OFFSET_COUNT)];
-        } else {
-            offset = (rng.nextLong(MAX_OFFSET / BLOCK_SIZE)) * BLOCK_SIZE;
-        }
-
-        blockCache.loadMissingBlocks(testFile, offset, BLOCKS_PER_REQUEST);
-        bh.consume(prefetchTracker.getBlocksLoaded());
+        CountDownLatch latch = new CountDownLatch(1);
+        long off = offset;
+        prefetchTracker.execute(() -> {
+            try {
+                for (int i = 0; i < BLOCKS_PER_REQUEST; i++) {
+                    BlockCacheKey key = new FileBlockCacheKey(testFile, off + (long) i * BLOCK_SIZE);
+                    if (prefetchTracker.putIfAbsent(key)) {
+                        Thread.sleep(5);
+                        prefetchTracker.remove(key);
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                latch.countDown();
+            }
+        });
+        latch.await();
+        bh.consume(offset);
     }
 
-    /**
-     * PrefetchTracker that bypasses ConcurrentHashMap - always allows load, never deduplicates.
-     */
     static class NoOpPrefetchTracker extends PrefetchTracker {
         NoOpPrefetchTracker(java.util.concurrent.Executor executor) {
             super(executor);
@@ -190,29 +118,6 @@ public class DedupOverheadBenchmark {
         }
 
         @Override
-        public void remove(BlockCacheKey key) {
-            // no-op
-        }
-    }
-
-    /**
-     * BlockLoader that simulates 5ms I/O latency, then returns pool-allocated segments.
-     */
-    static class SleepingBlockLoader implements BlockLoader<RefCountedMemorySegment> {
-        private final Pool<RefCountedMemorySegment> pool;
-
-        SleepingBlockLoader(Pool<RefCountedMemorySegment> pool) {
-            this.pool = pool;
-        }
-
-        @Override
-        public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
-            Thread.sleep(5);
-            RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
-            for (int i = 0; i < blockCount; i++) {
-                result[i] = pool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
-            }
-            return result;
-        }
+        public void remove(BlockCacheKey key) {}
     }
 }

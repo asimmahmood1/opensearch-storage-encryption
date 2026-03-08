@@ -340,6 +340,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             );
     }
 
+    @Override
+    public String prefetchStats() {
+        return prefetchTracker.stats();
+    }
+
     /**
      * Get the underlying Caffeine cache instance.
      * This is used for sharing the cache storage across multiple BlockCache instances

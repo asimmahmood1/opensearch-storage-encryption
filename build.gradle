@@ -209,10 +209,17 @@ jmh {
         '--enable-preview',
         '--add-opens=java.base/java.nio=ALL-UNNAMED'
     ]
-    fork = 1
-    warmupIterations = 2
-    iterations = 3
+    fork = project.hasProperty('jmh.fork') ? project.property('jmh.fork') as int : 1
+    warmupIterations = project.hasProperty('jmh.wi') ? project.property('jmh.wi') as int : 2
+    iterations = project.hasProperty('jmh.i') ? project.property('jmh.i') as int : 3
     timeUnit = 'ms'
+    if (project.hasProperty('jmh.includes')) {
+        includes = [project.property('jmh.includes')]
+    }
+
+    def timestamp = new Date().format('yyyyMMdd_HHmmss')
+    resultsFile = project.file("build/jmh-results/jmh_${timestamp}.json")
+    resultFormat = 'JSON'
 }
 
 spotless {

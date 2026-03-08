@@ -126,8 +126,8 @@ public class PrefetchTracker {
         return blocksCacheHit.get();
     }
 
-    // Testing only
-    void resetStats() {
+    // Testing and benchmarking
+    public void resetStats() {
         loadMissingBlocksCalls.set(0);
         blocksRequested.set(0);
         blocksLoaded.set(0);

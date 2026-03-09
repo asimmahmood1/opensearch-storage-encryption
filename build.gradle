@@ -216,6 +216,9 @@ jmh {
     if (project.hasProperty('jmh.includes')) {
         includes = [project.property('jmh.includes')]
     }
+    if (project.hasProperty('jmh.prof')) {
+        profilers = [project.property('jmh.prof')]
+    }
 
     def timestamp = new Date().format('yyyyMMdd_HHmmss')
     resultsFile = project.file("build/jmh-results/jmh_${timestamp}.json")

@@ -60,9 +60,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final int BLOCK_SIZE = 8192;
     private static final long FILE_SIZE = 10L * 1024 * 1024;
     private static final long PREFETCH_SIZE = BLOCK_SIZE;
+    private static final int READS_PER_BLOCK = 1024;
 
     @Param({ "bufferpool", "mmap" })
     private String mode;
+
+    @Param({ "true", "false" })
+    private boolean prefetchEnabled;
 
     private Path tempDir;
     private Pool<RefCountedMemorySegment> pool;
@@ -72,6 +76,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private BufferPoolDirectory bufferPoolDir;
     private MMapDirectory mmapDir;
     private IndexInput sharedInput;
+    private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
     private long fileLength;
 
     @Setup(Level.Trial)
@@ -89,7 +94,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         // Setup BufferPoolDirectory components
         pool = new MemorySegmentPool(10L * 1024 * 1024, BLOCK_SIZE);
-        executor = Executors.newFixedThreadPool(4, r -> {
+        executor = Executors.newFixedThreadPool(8, r -> {
             Thread t = new Thread(r, "prefetch-worker");
             t.setDaemon(true);
             return t;
@@ -112,8 +117,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             .build();
 
         CryptoDirectIOBlockLoader loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encMetaCache);
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache =
-            new CaffeineBlockCache<>(caffeineCache, loader, 1_000, prefetchTracker);
+        blockCache = new CaffeineBlockCache<>(caffeineCache, loader, 1_000, prefetchTracker);
 
         readaheadWorker = new QueuingWorker(64, executor);
         bufferPoolDir = new BufferPoolDirectory(
@@ -168,6 +172,14 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         });
     }
 
+    @TearDown(Level.Iteration)
+    public void logStats() {
+        if (blockCache != null) {
+            System.out.println("[STATS] " + blockCache.cacheStats());
+            System.out.println("[STATS] " + blockCache.prefetchStats());
+        }
+    }
+
     @TearDown(Level.Trial)
     public void tearDown() throws Exception {
         // 1. Stop the readahead worker from accepting/scheduling new tasks
@@ -217,22 +229,28 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             if (threadInput != null) threadInput.close();
         }
     }
-
-    @Benchmark
-    @Threads(1)
-    public void prefetch_1Thread(ThreadState ts, Blackhole bh) throws IOException {
-        doPrefetch(ts, bh);
-    }
+//
+//    @Benchmark
+//    @Threads(1)
+//    public void read_1Thread(ThreadState ts, Blackhole bh) throws IOException {
+//        doRead(ts, bh);
+//    }
 
     @Benchmark
     @Threads(4)
-    public void prefetch_4Threads(ThreadState ts, Blackhole bh) throws IOException {
-        doPrefetch(ts, bh);
+    public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+        doRead(ts, bh);
     }
 
-    private void doPrefetch(ThreadState ts, Blackhole bh) throws IOException {
-        ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
-        bh.consume(ts.offset);
+    private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+        if (prefetchEnabled) {
+            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
+        }
+//        Thread.sleep(0L, 20);
+        ts.threadInput.seek(ts.offset);
+        for (int i = 0; i < READS_PER_BLOCK; i++) {
+            bh.consume(ts.threadInput.readLong());
+        }
         ts.offset += PREFETCH_SIZE;
         if (ts.offset + PREFETCH_SIZE > fileLength) {
             ts.offset = 0;

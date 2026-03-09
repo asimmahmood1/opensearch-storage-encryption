@@ -231,28 +231,28 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     }
 
     @Benchmark
-    @Threads(1)
-    public void read_1Thread(ThreadState ts, Blackhole bh) throws IOException {
-        doRead(ts, bh);
-    }
-
-    @Benchmark
     @Threads(4)
     public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException {
         doRead(ts, bh);
     }
 
     private void doRead(ThreadState ts, Blackhole bh) throws IOException {
-        if (prefetchEnabled) {
-            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
-        }
+        // Read current block
         ts.threadInput.seek(ts.offset);
         for (int i = 0; i < READS_PER_BLOCK; i++) {
             bh.consume(ts.threadInput.readLong());
         }
+
+        // Advance to next block
         ts.offset += PREFETCH_SIZE;
         if (ts.offset + PREFETCH_SIZE > fileLength) {
             ts.offset = 0;
+        }
+
+        // Prefetch next block ahead — by the time the next iteration reads it,
+        // the async load has had one full iteration to complete
+        if (prefetchEnabled) {
+            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
         }
     }
 }

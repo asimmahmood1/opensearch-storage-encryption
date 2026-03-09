@@ -71,9 +71,6 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private Worker readaheadWorker;
     private BufferPoolDirectory bufferPoolDir;
     private MMapDirectory mmapDir;
-    private IndexInput bufferPoolInput;
-    private IndexInput mmapInput;
-    private IndexInput activeInput;
     private long fileLength;
 
     @Setup(Level.Trial)
@@ -135,14 +132,14 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             }
         }
 
-        bufferPoolInput = bufferPoolDir.openInput("test.dat", IOContext.READONCE);
-        fileLength = bufferPoolInput.length();
+        // Open briefly to get file length, then close immediately so we don't hold
+        // a confined MemorySegment that tearDown (on a different thread) can't close.
+        try (IndexInput tmp = bufferPoolDir.openInput("test.dat", IOContext.READONCE)) {
+            fileLength = tmp.length();
+        }
 
         // MMapDirectory on same path
         mmapDir = new MMapDirectory(tempDir);
-        mmapInput = mmapDir.openInput("test.dat", IOContext.READONCE);
-
-        activeInput = "bufferpool".equals(mode) ? bufferPoolInput : mmapInput;
     }
 
     private void initMetrics() {
@@ -170,28 +167,34 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     @TearDown(Level.Trial)
     public void tearDown() throws Exception {
-        // Close inputs first to stop new prefetch submissions
-        if (bufferPoolInput != null) bufferPoolInput.close();
-        if (mmapInput != null) mmapInput.close();
+        // 1. Stop the readahead worker from accepting/scheduling new tasks
         if (readaheadWorker != null) readaheadWorker.close();
 
-        // Wait for in-flight prefetches to drain before deleting files
-        if (prefetchTracker != null) {
-            long deadline = System.currentTimeMillis() + 5_000;
-            while (!prefetchTracker.isEmpty() && System.currentTimeMillis() < deadline) {
-                Thread.sleep(50);
+        // 2. Clear prefetch tracker to prevent any pending dedup entries from
+        //    triggering new loads
+        if (prefetchTracker != null) prefetchTracker.clear();
+
+        // 3. Shut down the executor and drain all in-flight async prefetch I/O.
+        //    Both QueuingWorker.drainLoop and PrefetchTracker.execute run on this
+        //    executor, so awaiting termination covers both paths.
+        if (executor != null) {
+            executor.shutdown();
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+                executor.awaitTermination(5, TimeUnit.SECONDS);
             }
         }
 
+        // 4. Now safe to close directories and delete files
         if (bufferPoolDir != null) bufferPoolDir.close();
         if (mmapDir != null) mmapDir.close();
-        if (executor != null) {
-            executor.shutdown();
-            executor.awaitTermination(30, TimeUnit.SECONDS);
-        }
         if (tempDir != null) {
             Files.walk(tempDir).sorted((a, b) -> b.compareTo(a)).forEach(p -> {
-                try { Files.deleteIfExists(p); } catch (IOException e) { /* ignore */ }
+                try {
+                    Files.deleteIfExists(p);
+                } catch (IOException e) {
+                    p.toFile().deleteOnExit();
+                }
             });
         }
     }
@@ -202,9 +205,14 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         IndexInput threadInput;
 
         @Setup(Level.Trial)
-        public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
-            // Clone so each thread owns its own MemorySegment session (required by MMapDirectory)
-            threadInput = bench.activeInput.clone();
+        public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) throws IOException {
+            // Open a fresh IndexInput per thread so the MemorySegment is owned by this thread
+            // (cloning a confined MemorySegment from another thread throws IllegalStateException)
+            if ("bufferpool".equals(bench.mode)) {
+                threadInput = bench.bufferPoolDir.openInput("test.dat", IOContext.READONCE);
+            } else {
+                threadInput = bench.mmapDir.openInput("test.dat", IOContext.READONCE);
+            }
         }
 
         @TearDown(Level.Trial)

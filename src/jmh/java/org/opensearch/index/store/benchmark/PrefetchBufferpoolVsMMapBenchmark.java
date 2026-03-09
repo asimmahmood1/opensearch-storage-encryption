@@ -58,8 +58,8 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
-    private static final long FILE_SIZE = 100L * 1024 * 1024;
-    private static final long PREFETCH_SIZE = 65536L;
+    private static final long FILE_SIZE = 10L * 1024 * 1024;
+    private static final long PREFETCH_SIZE = BLOCK_SIZE;
 
     @Param({ "bufferpool", "mmap" })
     private String mode;
@@ -185,18 +185,20 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             executor.awaitTermination(30, TimeUnit.SECONDS);
         }
 
-        // 4. Now safe to close shared input, directories, and delete files
+        // 4. Now safe to close shared input and directories
         if (sharedInput != null) sharedInput.close();
         if (bufferPoolDir != null) bufferPoolDir.close();
         if (mmapDir != null) mmapDir.close();
+        // Temp files cleaned up on JVM exit; deleting here races with
+        // async prefetch I/O that may still be in-flight.
         if (tempDir != null) {
-            Files.walk(tempDir).sorted((a, b) -> b.compareTo(a)).forEach(p -> {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
-                    Files.deleteIfExists(p);
-                } catch (IOException e) {
-                    p.toFile().deleteOnExit();
-                }
-            });
+                    Files.walk(tempDir).sorted((a, b) -> b.compareTo(a)).forEach(p -> {
+                        try { Files.deleteIfExists(p); } catch (IOException e) { /* ignore */ }
+                    });
+                } catch (IOException e) { /* ignore */ }
+            }));
         }
     }
 

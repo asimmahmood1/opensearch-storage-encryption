@@ -389,5 +389,6 @@ public class MemorySegmentPool implements Pool<RefCountedMemorySegment>, AutoClo
         CryptoMetricsService
             .getInstance()
             .recordPoolStats(SegmentType.PRIMARY, maxSegments, allocatedSegments, cachedFreeListSize, utilization, allocation);
+        LOGGER.info("{}", getStats());
     }
 }

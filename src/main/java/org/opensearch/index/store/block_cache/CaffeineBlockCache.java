@@ -380,6 +380,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 prefetchTracker.getBlocksCacheHit(),
                 prefetchTracker.size()
             );
+        LOGGER.info("{}", stats);
+        LOGGER.info("{}", prefetchTracker.stats());
     }
 
     @Override

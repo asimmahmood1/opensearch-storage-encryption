@@ -232,14 +232,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (!isSlice)
             return;
 
-        final BlockCacheValue<RefCountedMemorySegment> b = currentBlock;
-        if (b != null) {
-            currentBlock = null;
-            currentBlockOffset = -1L;
-            b.unpin();
-        } else {
-            currentBlockOffset = -1L;
-        }
+//        final BlockCacheValue<RefCountedMemorySegment> b = currentBlock;
+//        if (b != null) {
+//            currentBlock = null;
+//            currentBlockOffset = -1L;
+//            b.unpin();
+//        } else {
+//            currentBlockOffset = -1L;
+//        }
     }
 
     @Override

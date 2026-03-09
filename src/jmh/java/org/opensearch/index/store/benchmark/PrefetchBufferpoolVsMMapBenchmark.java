@@ -199,6 +199,18 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @State(Scope.Thread)
     public static class ThreadState {
         long offset = 0;
+        IndexInput threadInput;
+
+        @Setup(Level.Trial)
+        public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
+            // Clone so each thread owns its own MemorySegment session (required by MMapDirectory)
+            threadInput = bench.activeInput.clone();
+        }
+
+        @TearDown(Level.Trial)
+        public void tearDownThread() throws IOException {
+            if (threadInput != null) threadInput.close();
+        }
     }
 
     @Benchmark
@@ -214,7 +226,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     }
 
     private void doPrefetch(ThreadState ts, Blackhole bh) throws IOException {
-        activeInput.prefetch(ts.offset, PREFETCH_SIZE);
+        ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
         bh.consume(ts.offset);
         ts.offset += PREFETCH_SIZE;
         if (ts.offset + PREFETCH_SIZE > fileLength) {

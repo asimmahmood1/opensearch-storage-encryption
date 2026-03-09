@@ -41,7 +41,6 @@ import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
-import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.MemorySegmentPool;
 import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.Worker;
@@ -68,6 +67,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private Path tempDir;
     private Pool<RefCountedMemorySegment> pool;
     private ExecutorService executor;
+    private PrefetchTracker prefetchTracker;
     private Worker readaheadWorker;
     private BufferPoolDirectory bufferPoolDir;
     private MMapDirectory mmapDir;
@@ -89,30 +89,14 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         SecretKeySpec aesKey = new SecretKeySpec(rawKey, "AES");
         KeyResolver keyResolver = () -> aesKey;
 
-        // Write encrypted file
-        CryptoNIOFSDirectory writeDir = new CryptoNIOFSDirectory(
-            FSLockFactory.getDefault(), tempDir, provider, keyResolver, encMetaCache
-        );
-        try (IndexOutput out = writeDir.createOutput("test.dat", IOContext.DEFAULT)) {
-            Random rng = new Random(42);
-            byte[] buf = new byte[BLOCK_SIZE];
-            long written = 0;
-            while (written < FILE_SIZE) {
-                rng.nextBytes(buf);
-                out.writeBytes(buf, 0, buf.length);
-                written += buf.length;
-            }
-        }
-        writeDir.close();
-
-        // BufferPoolDirectory setup
+        // Setup BufferPoolDirectory components
         pool = new MemorySegmentPool(10L * 1024 * 1024, BLOCK_SIZE);
         executor = Executors.newFixedThreadPool(4, r -> {
             Thread t = new Thread(r, "prefetch-worker");
             t.setDaemon(true);
             return t;
         });
-        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+        prefetchTracker = new PrefetchTracker(executor);
 
         Cache<BlockCacheKey, org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
             .newBuilder()
@@ -138,10 +122,23 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             tempDir, FSLockFactory.getDefault(), provider, keyResolver,
             pool, blockCache, loader, readaheadWorker, encMetaCache
         );
+
+        // Write encrypted file via BufferPoolDirectory
+        try (IndexOutput out = bufferPoolDir.createOutput("test.dat", IOContext.DEFAULT)) {
+            Random rng = new Random(42);
+            byte[] buf = new byte[BLOCK_SIZE];
+            long written = 0;
+            while (written < FILE_SIZE) {
+                rng.nextBytes(buf);
+                out.writeBytes(buf, 0, buf.length);
+                written += buf.length;
+            }
+        }
+
         bufferPoolInput = bufferPoolDir.openInput("test.dat", IOContext.READONCE);
         fileLength = bufferPoolInput.length();
 
-        // MMapDirectory setup
+        // MMapDirectory on same path
         mmapDir = new MMapDirectory(tempDir);
         mmapInput = mmapDir.openInput("test.dat", IOContext.READONCE);
 
@@ -173,9 +170,19 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     @TearDown(Level.Trial)
     public void tearDown() throws Exception {
+        // Close inputs first to stop new prefetch submissions
         if (bufferPoolInput != null) bufferPoolInput.close();
         if (mmapInput != null) mmapInput.close();
         if (readaheadWorker != null) readaheadWorker.close();
+
+        // Wait for in-flight prefetches to drain before deleting files
+        if (prefetchTracker != null) {
+            long deadline = System.currentTimeMillis() + 5_000;
+            while (!prefetchTracker.isEmpty() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(50);
+            }
+        }
+
         if (bufferPoolDir != null) bufferPoolDir.close();
         if (mmapDir != null) mmapDir.close();
         if (executor != null) {

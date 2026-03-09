@@ -71,6 +71,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private Worker readaheadWorker;
     private BufferPoolDirectory bufferPoolDir;
     private MMapDirectory mmapDir;
+    private IndexInput sharedInput;
     private long fileLength;
 
     @Setup(Level.Trial)
@@ -132,14 +133,16 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             }
         }
 
-        // Open briefly to get file length, then close immediately so we don't hold
-        // a confined MemorySegment that tearDown (on a different thread) can't close.
-        try (IndexInput tmp = bufferPoolDir.openInput("test.dat", IOContext.READONCE)) {
-            fileLength = tmp.length();
+        // Open a shared IndexInput for cloning in per-thread setup.
+        // For mmap: IOContext.DEFAULT gives a shared arena (not confined), allowing cross-thread clone.
+        // For bufferpool: CachedMemorySegmentIndexInput supports cross-thread clone natively.
+        if ("bufferpool".equals(mode)) {
+            sharedInput = bufferPoolDir.openInput("test.dat", IOContext.DEFAULT);
+        } else {
+            mmapDir = new MMapDirectory(tempDir);
+            sharedInput = mmapDir.openInput("test.dat", IOContext.DEFAULT);
         }
-
-        // MMapDirectory on same path
-        mmapDir = new MMapDirectory(tempDir);
+        fileLength = sharedInput.length();
     }
 
     private void initMetrics() {
@@ -179,13 +182,11 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         //    executor, so awaiting termination covers both paths.
         if (executor != null) {
             executor.shutdown();
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-                executor.awaitTermination(5, TimeUnit.SECONDS);
-            }
+            executor.awaitTermination(30, TimeUnit.SECONDS);
         }
 
-        // 4. Now safe to close directories and delete files
+        // 4. Now safe to close shared input, directories, and delete files
+        if (sharedInput != null) sharedInput.close();
         if (bufferPoolDir != null) bufferPoolDir.close();
         if (mmapDir != null) mmapDir.close();
         if (tempDir != null) {
@@ -205,14 +206,8 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         IndexInput threadInput;
 
         @Setup(Level.Trial)
-        public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) throws IOException {
-            // Open a fresh IndexInput per thread so the MemorySegment is owned by this thread
-            // (cloning a confined MemorySegment from another thread throws IllegalStateException)
-            if ("bufferpool".equals(bench.mode)) {
-                threadInput = bench.bufferPoolDir.openInput("test.dat", IOContext.READONCE);
-            } else {
-                threadInput = bench.mmapDir.openInput("test.dat", IOContext.READONCE);
-            }
+        public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
+            threadInput = bench.sharedInput.clone();
         }
 
         @TearDown(Level.Trial)

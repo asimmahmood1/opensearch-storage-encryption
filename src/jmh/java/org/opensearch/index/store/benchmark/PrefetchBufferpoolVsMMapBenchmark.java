@@ -61,8 +61,8 @@ import com.github.benmanes.caffeine.cache.stats.CacheStats;
 public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
-    private static final long FILE_SIZE = 1024L * 1024 * 1024; // 1GB
-    private static final int PREFETCH_AHEAD = 8; // prefetch 8 blocks ahead
+    private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
+    private static final int PREFETCH_AHEAD = 1; // prefetch 8 blocks ahead
     private static final int READS_PER_BLOCK = BLOCK_SIZE / 8; //longs
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
@@ -72,6 +72,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     @Param({ "true", "false" })
     private boolean prefetchEnabled;
+
+    @Param({ "true", "false" })
+    private boolean cacheWarm;
 
     private Path tempDir;
     private Pool<RefCountedMemorySegment> pool;
@@ -111,6 +114,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         Cache<BlockCacheKey, org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(MAX_BLOCKS_CACHE) // larger than needed, to compare mmap
+            .recordStats()
             .removalListener(
                 (
                     BlockCacheKey key,
@@ -318,6 +322,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             ts.offset = 0;
             ts.passCount++;
             totalPasses.incrementAndGet();
+            if (!cacheWarm) {
+                blockCache.clear();
+            }
         }
         // Prefetch N blocks ahead — gives the async threadpool enough
         // lead time to load before the read catches up

@@ -232,11 +232,19 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     @Benchmark
     @Threads(4)
-    public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException {
+    public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
         doRead(ts, bh);
     }
 
-    private void doRead(ThreadState ts, Blackhole bh) throws IOException {
+    private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+        // Prefetch next block ahead — by the time the next iteration reads it,
+        // the async load has had one full iteration to complete
+        if (prefetchEnabled) {
+            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
+        }
+        // simulate getQuery() phase
+        Thread.sleep(0, 1);
+
         // Read current block
         ts.threadInput.seek(ts.offset);
         for (int i = 0; i < READS_PER_BLOCK; i++) {
@@ -249,10 +257,6 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             ts.offset = 0;
         }
 
-        // Prefetch next block ahead — by the time the next iteration reads it,
-        // the async load has had one full iteration to complete
-        if (prefetchEnabled) {
-            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
-        }
+
     }
 }

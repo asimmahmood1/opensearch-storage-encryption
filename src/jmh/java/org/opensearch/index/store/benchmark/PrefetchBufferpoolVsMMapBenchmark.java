@@ -13,6 +13,7 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -38,6 +39,7 @@ import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.CachedMemorySegmentIndexInput;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -48,6 +50,7 @@ import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 
 /**
  * Compares sequential prefetch throughput: BufferPoolDirectory (block cache + decrypt)
@@ -58,11 +61,13 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
-    private static final long FILE_SIZE = 10L * 1024 * 1024;
-    private static final long PREFETCH_SIZE = BLOCK_SIZE;
-    private static final int READS_PER_BLOCK = 1024;
+    private static final long FILE_SIZE = 1024L * 1024 * 1024; // 1GB
+    private static final int PREFETCH_AHEAD = 8; // prefetch 8 blocks ahead
+    private static final int READS_PER_BLOCK = BLOCK_SIZE / 8; //longs
+    private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
+    private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool", "mmap" })
+    @Param({ "bufferpool"/*, "mmap"*/ })
     private String mode;
 
     @Param({ "true", "false" })
@@ -77,6 +82,8 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private MMapDirectory mmapDir;
     private IndexInput sharedInput;
     private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
+    private CacheStats cacheStatsBaseline;
+    private final AtomicInteger totalPasses = new AtomicInteger();
     private long fileLength;
 
     @Setup(Level.Trial)
@@ -93,8 +100,8 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         KeyResolver keyResolver = () -> aesKey;
 
         // Setup BufferPoolDirectory components
-        pool = new MemorySegmentPool(10L * 1024 * 1024, BLOCK_SIZE);
-        executor = Executors.newFixedThreadPool(8, r -> {
+        pool = new MemorySegmentPool(TOTAL_MEMORY_POOL, BLOCK_SIZE);
+        executor = Executors.newFixedThreadPool(32, r -> {
             Thread t = new Thread(r, "prefetch-worker");
             t.setDaemon(true);
             return t;
@@ -103,26 +110,35 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         Cache<BlockCacheKey, org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
             .newBuilder()
-            .maximumSize(1_000)
+            .maximumSize(MAX_BLOCKS_CACHE) // larger than needed, to compare mmap
             .removalListener(
                 (
                     BlockCacheKey key,
                     org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment> value,
                     com.github.benmanes.caffeine.cache.RemovalCause cause) -> {
                     if (value != null) {
-                        try { value.close(); } catch (Exception e) { /* ignore */ }
+                        try {
+                            value.close();
+                        } catch (Exception e) { /* ignore */ }
                     }
                 }
             )
             .build();
 
         CryptoDirectIOBlockLoader loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encMetaCache);
-        blockCache = new CaffeineBlockCache<>(caffeineCache, loader, 1_000, prefetchTracker);
+        blockCache = new CaffeineBlockCache<>(caffeineCache, loader, MAX_BLOCKS_CACHE, prefetchTracker);
 
         readaheadWorker = new QueuingWorker(64, executor);
         bufferPoolDir = new BufferPoolDirectory(
-            tempDir, FSLockFactory.getDefault(), provider, keyResolver,
-            pool, blockCache, loader, readaheadWorker, encMetaCache
+            tempDir,
+            FSLockFactory.getDefault(),
+            provider,
+            keyResolver,
+            pool,
+            blockCache,
+            loader,
+            readaheadWorker,
+            encMetaCache
         );
 
         // Write encrypted file via BufferPoolDirectory
@@ -152,62 +168,76 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private void initMetrics() {
         CryptoMetricsService.initialize(new org.opensearch.telemetry.metrics.MetricsRegistry() {
             @Override
-            public org.opensearch.telemetry.metrics.Counter createCounter(String n, String d, String u) { return null; }
+            public org.opensearch.telemetry.metrics.Counter createCounter(String n, String d, String u) {
+                return null;
+            }
 
             @Override
-            public org.opensearch.telemetry.metrics.Counter createUpDownCounter(String n, String d, String u) { return null; }
+            public org.opensearch.telemetry.metrics.Counter createUpDownCounter(String n, String d, String u) {
+                return null;
+            }
 
             @Override
-            public org.opensearch.telemetry.metrics.Histogram createHistogram(String n, String d, String u) { return null; }
+            public org.opensearch.telemetry.metrics.Histogram createHistogram(String n, String d, String u) {
+                return null;
+            }
 
             @Override
-            public java.io.Closeable createGauge(String n, String d, String u, java.util.function.Supplier s,
-                org.opensearch.telemetry.metrics.tags.Tags t) { return null; }
+            public java.io.Closeable createGauge(
+                String n,
+                String d,
+                String u,
+                java.util.function.Supplier s,
+                org.opensearch.telemetry.metrics.tags.Tags t
+            ) {
+                return null;
+            }
 
             @Override
-            public java.io.Closeable createGauge(String n, String d, String u, java.util.function.Supplier s) { return null; }
+            public java.io.Closeable createGauge(String n, String d, String u, java.util.function.Supplier s) {
+                return null;
+            }
 
             @Override
             public void close() {}
         });
     }
 
-    @TearDown(Level.Iteration)
-    public void logStats() {
-        if (blockCache != null) {
-            System.out.println("[STATS] " + blockCache.cacheStats());
-            System.out.println("[STATS] " + blockCache.prefetchStats());
-        }
-    }
-
     @TearDown(Level.Trial)
     public void tearDown() throws Exception {
         // 1. Stop the readahead worker from accepting/scheduling new tasks
-        if (readaheadWorker != null) readaheadWorker.close();
+        if (readaheadWorker != null)
+            readaheadWorker.close();
 
         // 2. Clear prefetch tracker to prevent any pending dedup entries from
-        //    triggering new loads
-        if (prefetchTracker != null) prefetchTracker.clear();
+        // triggering new loads
+        if (prefetchTracker != null)
+            prefetchTracker.clear();
 
         // 3. Shut down the executor and drain all in-flight async prefetch I/O.
-        //    Both QueuingWorker.drainLoop and PrefetchTracker.execute run on this
-        //    executor, so awaiting termination covers both paths.
+        // Both QueuingWorker.drainLoop and PrefetchTracker.execute run on this
+        // executor, so awaiting termination covers both paths.
         if (executor != null) {
             executor.shutdown();
             executor.awaitTermination(30, TimeUnit.SECONDS);
         }
 
         // 4. Now safe to close shared input and directories
-        if (sharedInput != null) sharedInput.close();
-        if (bufferPoolDir != null) bufferPoolDir.close();
-        if (mmapDir != null) mmapDir.close();
+        if (sharedInput != null)
+            sharedInput.close();
+        if (bufferPoolDir != null)
+            bufferPoolDir.close();
+        if (mmapDir != null)
+            mmapDir.close();
         // Temp files cleaned up on JVM exit; deleting here races with
         // async prefetch I/O that may still be in-flight.
         if (tempDir != null) {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
                     Files.walk(tempDir).sorted((a, b) -> b.compareTo(a)).forEach(p -> {
-                        try { Files.deleteIfExists(p); } catch (IOException e) { /* ignore */ }
+                        try {
+                            Files.deleteIfExists(p);
+                        } catch (IOException e) { /* ignore */ }
                     });
                 } catch (IOException e) { /* ignore */ }
             }));
@@ -217,6 +247,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @State(Scope.Thread)
     public static class ThreadState {
         long offset = 0;
+        int passCount = 0;
         IndexInput threadInput;
 
         @Setup(Level.Trial)
@@ -226,9 +257,43 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         @TearDown(Level.Trial)
         public void tearDownThread() throws IOException {
-            if (threadInput != null) threadInput.close();
+            if (threadInput != null)
+                threadInput.close();
         }
     }
+
+
+
+    @TearDown(Level.Iteration)
+    public void logStats() {
+        System.out.println();
+        System.out.println("[STATS] passes=" + totalPasses.getAndSet(0));
+        if (blockCache != null) {
+            CacheStats delta = blockCache.getCache().stats();
+            if (cacheStatsBaseline != null) {
+                delta = blockCache.getCache().stats().minus(cacheStatsBaseline);
+
+            }
+            System.out.println("[STATS] CaffineCache[size =" + blockCache.getCache().estimatedSize() + ",hits=" + delta.hitCount() + ", misses=" + delta.missCount()
+                    + ", hitRate=" + String.format("%.2f%%", delta.hitRate() * 100)
+                    + ", loads=" + delta.loadCount()
+                    + ", evictions=" + delta.evictionCount()
+                    + ", avgLoadTime=" + String.format("%.2fms", delta.averageLoadPenalty() / 1_000_000.0) + "]");
+            System.out.println("[STATS] " + blockCache.prefetchStats());
+            System.out.println("[STATS] " + pool.poolStats());
+
+            //reset stats
+            prefetchTracker.resetStats();
+            cacheStatsBaseline = blockCache.getCache().stats();
+
+        }
+        if (sharedInput instanceof CachedMemorySegmentIndexInput cmsi) {
+            System.out.println("[STATS] " + cmsi.getBlockSlotTinyCache().stats());
+            cmsi.getBlockSlotTinyCache().clear();
+            cmsi.getBlockSlotTinyCache().resetStats();
+        }
+    }
+
 
     @Benchmark
     @Threads(4)
@@ -237,13 +302,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     }
 
     private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
-        // Prefetch next block ahead — by the time the next iteration reads it,
-        // the async load has had one full iteration to complete
-        if (prefetchEnabled) {
-            ts.threadInput.prefetch(ts.offset, PREFETCH_SIZE);
-        }
-        // simulate getQuery() phase
-        Thread.sleep(0, 1);
+
+
+
 
         // Read current block
         ts.threadInput.seek(ts.offset);
@@ -252,11 +313,20 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         }
 
         // Advance to next block
-        ts.offset += PREFETCH_SIZE;
-        if (ts.offset + PREFETCH_SIZE > fileLength) {
+        ts.offset += BLOCK_SIZE;
+        if (ts.offset + BLOCK_SIZE > fileLength) {
             ts.offset = 0;
+            ts.passCount++;
+            totalPasses.incrementAndGet();
         }
-
+        // Prefetch N blocks ahead — gives the async threadpool enough
+        // lead time to load before the read catches up
+        if (prefetchEnabled) {
+            long prefetchOffset = ts.offset + (long) PREFETCH_AHEAD * BLOCK_SIZE;
+            if (prefetchOffset < fileLength) {
+                ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+            }
+        }
 
     }
 }

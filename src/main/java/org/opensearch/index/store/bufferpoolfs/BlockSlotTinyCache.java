@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 
 import org.opensearch.index.store.block.RefCountedMemorySegment;
@@ -91,6 +92,10 @@ public class BlockSlotTinyCache {
     private static final int SLOT_COUNT = 32;
     private static final int SLOT_MASK = SLOT_COUNT - 1;
 
+    private final LongAdder l1Hits = new LongAdder();
+    private final LongAdder l2Hits = new LongAdder();
+    private final LongAdder misses = new LongAdder();
+
     // VarHandle for acquire/release element access on long[]
     private static final VarHandle STAMP_ARR = MethodHandles.arrayElementVarHandle(long[].class);
 
@@ -170,6 +175,7 @@ public class BlockSlotTinyCache {
                             if (v.value().getGeneration() == expectedGen) {
                                 if (hitHolder != null)
                                     hitHolder.setWasCacheHit(true);
+                                l1Hits.increment();
                                 return v;
                             }
                             v.unpin();
@@ -197,6 +203,7 @@ public class BlockSlotTinyCache {
                         publishToL1(slotIdx, blockIdx, v, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(true);
+                        l2Hits.increment();
                         return v;
                     }
                     v.unpin(); // pinned recycled object; treat as miss
@@ -212,6 +219,7 @@ public class BlockSlotTinyCache {
                         publishToL1(slotIdx, blockIdx, loaded, expectedGen);
                         if (hitHolder != null)
                             hitHolder.setWasCacheHit(false);
+                        misses.increment();
                         return loaded;
                     }
                     loaded.unpin();
@@ -255,5 +263,26 @@ public class BlockSlotTinyCache {
             slotStamp[i] = 0L;
             slotKeys[i] = null;
         }
+    }
+
+    public String stats() {
+        long l1 = l1Hits.sum(), l2 = l2Hits.sum(), m = misses.sum();
+        long total = l1 + l2 + m;
+        return String
+            .format(
+                "TinyCache[l1Hits=%d, l2Hits=%d, misses=%d, total=%d, l1Rate=%.2f%%, l2Rate=%.2f%%]",
+                l1,
+                l2,
+                m,
+                total,
+                total == 0 ? 0 : l1 * 100.0 / total,
+                total == 0 ? 0 : l2 * 100.0 / total
+            );
+    }
+
+    public void resetStats() {
+        l1Hits.reset();
+        l2Hits.reset();
+        misses.reset();
     }
 }

@@ -92,15 +92,17 @@ public class PrefetchTracker {
         long loaded = blocksLoaded.get();
         long deduped = blocksDeduped.get();
         long cacheHit = blocksCacheHit.get();
+        double cacheHitRate = requested > 0 ? (100.0 * cacheHit / requested): 0;
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
-                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, loadRatio=%.2f%%, inflight=%d]",
+                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, inflight=%d]",
                 calls,
                 requested,
                 loaded,
                 deduped,
                 cacheHit,
+                cacheHitRate,
                 loadRatio,
                 inflight.size()
             );

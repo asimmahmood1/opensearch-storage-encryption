@@ -59,7 +59,7 @@ public class RestClearBufferPoolCacheAction extends BaseRestHandler {
         long initialSize = cache.getCacheSize();
 
         // Clear entire cache safely
-        //cache.clearSafely();
+        // cache.clearSafely();
 
         long finalSize = cache.getCacheSize();
         long cleared = initialSize - finalSize;

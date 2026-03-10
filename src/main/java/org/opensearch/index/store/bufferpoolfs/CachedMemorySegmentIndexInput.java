@@ -77,6 +77,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     private final BlockSlotTinyCache blockSlotTinyCache;
 
+    public BlockSlotTinyCache getBlockSlotTinyCache() {
+        return blockSlotTinyCache;
+    }
+
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
     private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
@@ -232,14 +236,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (!isSlice)
             return;
 
-//        final BlockCacheValue<RefCountedMemorySegment> b = currentBlock;
-//        if (b != null) {
-//            currentBlock = null;
-//            currentBlockOffset = -1L;
-//            b.unpin();
-//        } else {
-//            currentBlockOffset = -1L;
-//        }
+        // final BlockCacheValue<RefCountedMemorySegment> b = currentBlock;
+        // if (b != null) {
+        // currentBlock = null;
+        // currentBlockOffset = -1L;
+        // b.unpin();
+        // } else {
+        // currentBlockOffset = -1L;
+        // }
     }
 
     @Override

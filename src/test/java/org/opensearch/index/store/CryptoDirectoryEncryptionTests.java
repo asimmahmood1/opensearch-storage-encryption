@@ -544,7 +544,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
      * 
      * NOTE: Encryption is currently disabled, so encryption verification is commented out.
      */
-    public void testDirectIOCorrectKeyCanReadData() throws IOException {
+    public void testDirectIOCorrectKeyCanReadData() throws Exception {
         String testFileName = "test-directio-roundtrip.dat";
         String originalData = "DirectIO test data: secret_token=xyz789abc";
         byte[] dataBytes = originalData.getBytes(StandardCharsets.UTF_8);
@@ -617,6 +617,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 logger.info("✓ DirectIO round-trip I/O successful");
             }
         }
+        readAheadWorkerA.close();
+        executorA.shutdown();
+        executorA.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     /**
@@ -705,7 +708,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     /**
      * Test DirectIO cache invalidation on file deletion.
      */
-    public void testDirectIOCacheInvalidationOnFileDelete() throws IOException {
+    public void testDirectIOCacheInvalidationOnFileDelete() throws Exception {
         String testFileName = "test-directio-cache-invalidation.dat";
         String testData = "DirectIO cache test data";
         byte[] dataBytes = testData.getBytes(StandardCharsets.UTF_8);
@@ -776,5 +779,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
 
             logger.info("✓ DirectIO cache invalidation on file delete works correctly");
         }
+        readAheadWorkerA.close();
+        executorA.shutdown();
+        executorA.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
     }
 }

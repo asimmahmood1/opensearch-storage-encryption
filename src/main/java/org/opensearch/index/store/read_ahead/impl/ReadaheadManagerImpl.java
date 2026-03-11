@@ -93,10 +93,13 @@ public class ReadaheadManagerImpl implements ReadaheadManager {
         if (context != null)
             throw new IllegalStateException("ReadaheadContext already registered");
 
+	return null;
+	/*
         WindowedReadAheadConfig config = WindowedReadAheadConfig.defaultConfig();
         this.context = WindowedReadAheadContext.build(path, fileLength, worker, blockCache, config, this::signal);
 
         return this.context;
+	*/
     }
 
     /**

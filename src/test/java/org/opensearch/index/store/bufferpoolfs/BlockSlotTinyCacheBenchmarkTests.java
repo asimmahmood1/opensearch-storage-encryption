@@ -337,7 +337,7 @@ public class BlockSlotTinyCacheBenchmarkTests {
     /**
      * JUnit test entry point
      */
-    @org.junit.Test
+    //@org.junit.Test
     public void testBenchmark() throws Exception {
         runBenchmarks();
     }

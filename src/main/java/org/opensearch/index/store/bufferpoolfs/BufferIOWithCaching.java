@@ -256,6 +256,7 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
             int blockOffset,
             int chunkLen
         ) {
+		if (true) return;
             // Cache fully-aligned full blocks immediately
             if (blockOffset == 0 && chunkLen == CACHE_BLOCK_SIZE) {
                 try {

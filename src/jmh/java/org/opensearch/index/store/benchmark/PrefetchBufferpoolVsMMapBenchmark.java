@@ -22,6 +22,7 @@ import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.MMapDirectory;
+import org.apache.lucene.store.DataAccessHint;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Level;
@@ -67,13 +68,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool"/*, "mmap"*/ })
+    @Param({ "bufferpool","mmap" })
     private String mode;
 
     @Param({ "true", "false" })
     private boolean prefetchEnabled;
 
-    @Param({ "true", "false" })
+    @Param({ "true" /* , "false"*/ })
     private boolean cacheWarm;
 
     private Path tempDir;
@@ -161,10 +162,11 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         // For mmap: IOContext.DEFAULT gives a shared arena (not confined), allowing cross-thread clone.
         // For bufferpool: CachedMemorySegmentIndexInput supports cross-thread clone natively.
         if ("bufferpool".equals(mode)) {
+            blockCache.clear();
             sharedInput = bufferPoolDir.openInput("test.dat", IOContext.DEFAULT);
         } else {
             mmapDir = new MMapDirectory(tempDir);
-            sharedInput = mmapDir.openInput("test.dat", IOContext.DEFAULT);
+            sharedInput = mmapDir.openInput("test.dat", IOContext.DEFAULT.withHints(DataAccessHint.RANDOM));
         }
         fileLength = sharedInput.length();
     }
@@ -297,8 +299,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             cmsi.getBlockSlotTinyCache().resetStats();
         }
     }
-
-
+/*
+    @Benchmark
+    @Threads(1)
+    public void read_1Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+        doRead(ts, bh);
+    }
+*/
     @Benchmark
     @Threads(4)
     public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
@@ -308,7 +315,16 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
 
 
+        // Prefetch N blocks ahead — gives the async threadpool enough
+        // lead time to load before the read catches up
+        if (prefetchEnabled) {
+                ts.threadInput.prefetch(ts.offset, PREFETCH_AHEAD);
+        }
 
+        // Simulate query processing work (scoring, merging, collecting)
+        // that happens between block reads in real Lucene usage.
+        // This frees I/O bandwidth for prefetch to exploit.
+        Blackhole.consumeCPU(500);
 
         // Read current block
         ts.threadInput.seek(ts.offset);
@@ -324,14 +340,6 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             totalPasses.incrementAndGet();
             if (!cacheWarm) {
                 blockCache.clear();
-            }
-        }
-        // Prefetch N blocks ahead — gives the async threadpool enough
-        // lead time to load before the read catches up
-        if (prefetchEnabled) {
-            long prefetchOffset = ts.offset + (long) PREFETCH_AHEAD * BLOCK_SIZE;
-            if (prefetchOffset < fileLength) {
-                ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
             }
         }
 

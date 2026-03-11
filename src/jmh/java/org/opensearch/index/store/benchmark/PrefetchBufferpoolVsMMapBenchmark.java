@@ -88,10 +88,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
     private CacheStats cacheStatsBaseline;
     private final AtomicInteger totalPasses = new AtomicInteger();
+    private final AtomicInteger threadIndex = new AtomicInteger();
     private long fileLength;
+    private int threadCount;
 
     @Setup(Level.Trial)
-    public void setup() throws Exception {
+    public void setup(org.openjdk.jmh.infra.BenchmarkParams params) throws Exception {
+        threadCount = params.getThreads();
         initMetrics();
 
         tempDir = Files.createTempDirectory("prefetch-comparison");
@@ -253,12 +256,21 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @State(Scope.Thread)
     public static class ThreadState {
         long offset = 0;
+        long rangeStart;
+        long rangeEnd;
         int passCount = 0;
         IndexInput threadInput;
 
         @Setup(Level.Trial)
         public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
             threadInput = bench.sharedInput.clone();
+            int idx = bench.threadIndex.getAndIncrement();
+            int threads = bench.threadCount;
+            long totalBlocks = bench.fileLength / BLOCK_SIZE;
+            long blocksPerPartition = totalBlocks / threads;
+            rangeStart = (idx % threads) * blocksPerPartition * BLOCK_SIZE;
+            rangeEnd = rangeStart + blocksPerPartition * BLOCK_SIZE;
+            offset = rangeStart;
         }
 
         @TearDown(Level.Trial)
@@ -334,8 +346,8 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         // Advance to next block
         ts.offset += BLOCK_SIZE;
-        if (ts.offset + BLOCK_SIZE > fileLength) {
-            ts.offset = 0;
+        if (ts.offset + BLOCK_SIZE > ts.rangeEnd) {
+            ts.offset = ts.rangeStart;
             ts.passCount++;
             totalPasses.incrementAndGet();
             if (!cacheWarm) {

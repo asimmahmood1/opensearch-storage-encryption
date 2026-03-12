@@ -121,6 +121,7 @@ public class BufferPoolDirectory extends FSDirectory {
             ensureCanRead(name);
 
             Path file = dirPath.resolve(name);
+            file = file.toAbsolutePath().normalize();
             long rawFileSize = Files.size(file);
             if (rawFileSize == 0) {
                 throw new IOException("Cannot open empty file with DirectIO: " + file);

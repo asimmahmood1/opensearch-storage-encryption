@@ -40,7 +40,7 @@ public final class FileBlockCacheKey implements BlockCacheKey {
      * @param fileOffset the byte offset within the file where the block starts
      */
     public FileBlockCacheKey(Path filePath, long fileOffset) {
-        this.filePath = filePath.toAbsolutePath().normalize();
+        this.filePath = filePath;
         this.fileOffset = fileOffset;
         this.pathString = this.filePath.toString();
     }

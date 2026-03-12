@@ -6,7 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Tracks prefetch deduplication state and statistics.
@@ -19,11 +19,12 @@ public class PrefetchTracker {
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
     private final Executor executor;
 
-    private final AtomicLong loadMissingBlocksCalls = new AtomicLong();
-    private final AtomicLong blocksRequested = new AtomicLong();
-    private final AtomicLong blocksLoaded = new AtomicLong();
-    private final AtomicLong blocksDeduped = new AtomicLong();
-    private final AtomicLong blocksCacheHit = new AtomicLong();
+    private final LongAdder loadMissingBlocksCalls = new LongAdder();
+    private final LongAdder blocksRequested = new LongAdder();
+    private final LongAdder blocksLoaded = new LongAdder();
+    private final LongAdder blocksDeduped = new LongAdder();
+    private final LongAdder blocksCacheHit = new LongAdder();
+    private final LongAdder executeRejections = new LongAdder();
 
     /**
      * Creates a prefetch tracker with the given async executor.
@@ -40,7 +41,11 @@ public class PrefetchTracker {
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
-        executor.execute(task);
+        try {
+            executor.execute(task);
+        } catch (Exception e) {
+            executeRejections.increment();
+        }
     }
 
     /**
@@ -53,7 +58,7 @@ public class PrefetchTracker {
         if (inflight.putIfAbsent(key, Boolean.TRUE) == null) {
             return true;
         }
-        blocksDeduped.incrementAndGet();
+        blocksDeduped.increment();
         return false;
     }
 
@@ -74,29 +79,30 @@ public class PrefetchTracker {
     }
 
     public void recordLoadMissingBlocksCall(long blockCount) {
-        loadMissingBlocksCalls.incrementAndGet();
-        blocksRequested.addAndGet(blockCount);
+        loadMissingBlocksCalls.increment();
+        blocksRequested.add(blockCount);
     }
 
     public void recordBlocksLoaded(long count) {
-        blocksLoaded.addAndGet(count);
+        blocksLoaded.add(count);
     }
 
     public void recordCacheHits(long count) {
-        blocksCacheHit.addAndGet(count);
+        blocksCacheHit.add(count);
     }
 
     public String stats() {
-        long calls = loadMissingBlocksCalls.get();
-        long requested = blocksRequested.get();
-        long loaded = blocksLoaded.get();
-        long deduped = blocksDeduped.get();
-        long cacheHit = blocksCacheHit.get();
+        long calls = loadMissingBlocksCalls.sum();
+        long requested = blocksRequested.sum();
+        long loaded = blocksLoaded.sum();
+        long deduped = blocksDeduped.sum();
+        long cacheHit = blocksCacheHit.sum();
+        long rejections = executeRejections.sum();
         double cacheHitRate = requested > 0 ? (100.0 * cacheHit / requested): 0;
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
-                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, inflight=%d]",
+                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, inflight=%d, rejections=%d]",
                 calls,
                 requested,
                 loaded,
@@ -104,36 +110,42 @@ public class PrefetchTracker {
                 cacheHit,
                 cacheHitRate,
                 loadRatio,
-                inflight.size()
+                inflight.size(),
+                rejections
             );
     }
 
     public long getCalls() {
-        return loadMissingBlocksCalls.get();
+        return loadMissingBlocksCalls.sum();
     }
 
     public long getBlocksRequested() {
-        return blocksRequested.get();
+        return blocksRequested.sum();
     }
 
     public long getBlocksLoaded() {
-        return blocksLoaded.get();
+        return blocksLoaded.sum();
     }
 
     public long getBlocksDeduped() {
-        return blocksDeduped.get();
+        return blocksDeduped.sum();
     }
 
     public long getBlocksCacheHit() {
-        return blocksCacheHit.get();
+        return blocksCacheHit.sum();
+    }
+
+    public long getExecuteRejections() {
+        return executeRejections.sum();
     }
 
     // Testing and benchmarking
     public void resetStats() {
-        loadMissingBlocksCalls.set(0);
-        blocksRequested.set(0);
-        blocksLoaded.set(0);
-        blocksDeduped.set(0);
-        blocksCacheHit.set(0);
+        loadMissingBlocksCalls.reset();
+        blocksRequested.reset();
+        blocksLoaded.reset();
+        blocksDeduped.reset();
+        blocksCacheHit.reset();
+        executeRejections.reset();
     }
 }

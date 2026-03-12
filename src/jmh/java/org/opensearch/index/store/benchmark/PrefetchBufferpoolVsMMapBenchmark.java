@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.LongAdder;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -34,9 +35,13 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.infra.Blackhole;
+import org.opensearch.common.settings.Settings;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
+import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
@@ -63,17 +68,31 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
     private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
-    private static final int PREFETCH_AHEAD = 4; // prefetch 4 non-contiguous blocks
+    private static final int PREFETCH_AHEAD = 16; // prefetch 4 non-contiguous blocks
     private static final int STRIDE_BLOCKS = 16; // blocks between each prefetched block
     private static final int READS_PER_BLOCK = 64 / 8; // 8 longs = 64 bytes per block
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool","mmap" })
+    @Param({ "bufferpool"/*,"mmap" */})
     private String mode;
 
-    @Param({ "true", "false" })
-    private boolean prefetchEnabled;
+    /**
+     * Prefetch mode:
+     * - "off": no prefetch
+     * - "async": prefetch via executor (original path)
+     * - "inline_check": check cache inline, skip executor if all cached
+     */
+    @Param({ "async", "inline_check", "off" })
+    private String prefetchMode;
+
+    /**
+     * Executor type for async prefetch:
+     * - "opensearch": OpenSearchThreadPoolExecutor (ThreadContext wrapping overhead)
+     * - "jdk": plain Executors.newFixedThreadPool (no wrapping)
+     */
+    @Param({ "opensearch", "jdk" })
+    private String executorType;
 
     @Param({ "true" /* , "false"*/ })
     private boolean cacheWarm;
@@ -88,7 +107,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private IndexInput sharedInput;
     private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
     private CacheStats cacheStatsBaseline;
-    private final AtomicInteger totalPasses = new AtomicInteger();
+    private final LongAdder totalPasses = new LongAdder();
+    private final LongAdder prefetchTimeNs = new LongAdder();
+    private final LongAdder prefetchCalls = new LongAdder();
     private final AtomicInteger threadIndex = new AtomicInteger();
     private long fileLength;
     private int threadCount;
@@ -109,11 +130,17 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         // Setup BufferPoolDirectory components
         pool = new MemorySegmentPool(TOTAL_MEMORY_POOL, BLOCK_SIZE);
-        executor = Executors.newFixedThreadPool(32, r -> {
-            Thread t = new Thread(r, "prefetch-worker");
-            t.setDaemon(true);
-            return t;
-        });
+        if ("jdk".equals(executorType)) {
+            executor = Executors.newFixedThreadPool(32);
+        } else {
+            executor = OpenSearchExecutors.newFixed(
+                "prefetch-worker",
+                32,
+                10000,
+                OpenSearchExecutors.daemonThreadFactory("prefetch-worker"),
+                new ThreadContext(Settings.EMPTY)
+            );
+        }
         prefetchTracker = new PrefetchTracker(executor);
 
         Cache<BlockCacheKey, org.opensearch.index.store.block_cache.BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
@@ -262,10 +289,12 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         long rangeEnd;
         int passCount = 0;
         IndexInput threadInput;
+        Path filePath; // cached normalized path for inline cache check
 
         @Setup(Level.Trial)
         public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
             threadInput = bench.sharedInput.clone();
+            filePath = bench.tempDir.resolve("test.dat").toAbsolutePath().normalize();
             int idx = bench.threadIndex.getAndIncrement();
             int threads = bench.threadCount;
             long totalBlocks = bench.fileLength / BLOCK_SIZE;
@@ -287,7 +316,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @TearDown(Level.Iteration)
     public void logStats() {
         System.out.println();
-        System.out.println("[STATS] passes=" + totalPasses.getAndSet(0));
+        System.out.println("[STATS] passes=" + totalPasses.sumThenReset());
+        long calls = prefetchCalls.sumThenReset();
+        long timeNs = prefetchTimeNs.sumThenReset();
+        if (calls > 0) {
+            System.out.println("[STATS] prefetch[calls=" + calls + ", totalMs=" + String.format("%.2f", timeNs / 1_000_000.0)
+                + ", avgUs=" + String.format("%.2f", timeNs / 1_000.0 / calls) + "]");
+        }
         if (blockCache != null) {
             System.out.println("[STATS] " + blockCache.prefetchStats());
             CacheStats delta = blockCache.getCache().stats();
@@ -329,15 +364,34 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
         long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
-        // Prefetch non-contiguous blocks ahead — each spaced STRIDE_BLOCKS apart
-        if (prefetchEnabled) {
+        if ("async".equals(prefetchMode)) {
+            // Original path: submit to executor (tests executor overhead)
             for (int i = 0; i < PREFETCH_AHEAD; i++) {
                 long prefetchOffset = ts.offset + i * strideBytes;
                 if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                    long t0 = System.nanoTime();
                     ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                    prefetchTimeNs.add(System.nanoTime() - t0);
+                    prefetchCalls.increment();
+                }
+            }
+        } else if ("inline_check".equals(prefetchMode)) {
+            // Inline cache check: skip executor submission if block is already cached
+            for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                long prefetchOffset = ts.offset + i * strideBytes;
+                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                    long t0 = System.nanoTime();
+                    FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                    if (blockCache.getCache().getIfPresent(key) == null) {
+                        // Only submit to executor if not cached
+                        ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                    }
+                    prefetchTimeNs.add(System.nanoTime() - t0);
+                    prefetchCalls.increment();
                 }
             }
         }
+        // "off" mode: no prefetch at all
 
         // Simulate query processing work (scoring, merging, collecting)
         //Blackhole.consumeCPU(500);
@@ -358,7 +412,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         if (ts.offset + BLOCK_SIZE > ts.rangeEnd) {
             ts.offset = ts.rangeStart;
             ts.passCount++;
-            totalPasses.incrementAndGet();
+            totalPasses.increment();
             if (!cacheWarm) {
                 blockCache.clear();
             }

@@ -91,10 +91,10 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "opensearch": OpenSearchThreadPoolExecutor (ThreadContext wrapping overhead)
      * - "jdk": plain Executors.newFixedThreadPool (no wrapping)
      */
-    @Param({ "opensearch", "jdk" })
+    @Param({ "opensearch" /*, "jdk" */})
     private String executorType;
 
-    @Param({ "true" /* , "false"*/ })
+    @Param({ /* "true"  ,*/ "false" })
     private boolean cacheWarm;
 
     private Path tempDir;
@@ -364,6 +364,18 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
         long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
+        if (!cacheWarm) {
+            for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                long prefetchOffset = ts.offset + i * strideBytes;
+                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                    long t0 = System.nanoTime();
+                    FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                    blockCache.invalidate(key);
+                }
+            }
+        }
+
+
         if ("async".equals(prefetchMode)) {
             // Original path: submit to executor (tests executor overhead)
             for (int i = 0; i < PREFETCH_AHEAD; i++) {
@@ -413,9 +425,6 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             ts.offset = ts.rangeStart;
             ts.passCount++;
             totalPasses.increment();
-            if (!cacheWarm) {
-                blockCache.clear();
-            }
         }
     }
 }

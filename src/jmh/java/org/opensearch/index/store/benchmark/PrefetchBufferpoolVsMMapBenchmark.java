@@ -64,7 +64,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final int BLOCK_SIZE = 8192;
     private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
     private static final int PREFETCH_AHEAD = 4; // prefetch 4 non-contiguous blocks
-    private static final int STRIDE_BLOCKS = 8; // blocks between each prefetched block
+    private static final int STRIDE_BLOCKS = 16; // blocks between each prefetched block
     private static final int READS_PER_BLOCK = 64 / 8; // 8 longs = 64 bytes per block
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;

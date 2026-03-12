@@ -63,8 +63,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
     private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
-    private static final int PREFETCH_AHEAD = 1; // prefetch 8 blocks ahead
-    private static final int READS_PER_BLOCK = BLOCK_SIZE / 8; //longs
+    private static final int PREFETCH_AHEAD = 4; // prefetch 4 non-contiguous blocks
+    private static final int STRIDE_BLOCKS = 8; // blocks between each prefetched block
+    private static final int READS_PER_BLOCK = 64 / 8; // 8 longs = 64 bytes per block
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
@@ -166,6 +167,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         // For bufferpool: CachedMemorySegmentIndexInput supports cross-thread clone natively.
         if ("bufferpool".equals(mode)) {
             blockCache.clear();
+
             sharedInput = bufferPoolDir.openInput("test.dat", IOContext.DEFAULT);
         } else {
             mmapDir = new MMapDirectory(tempDir);
@@ -287,6 +289,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         System.out.println();
         System.out.println("[STATS] passes=" + totalPasses.getAndSet(0));
         if (blockCache != null) {
+            System.out.println("[STATS] " + blockCache.prefetchStats());
             CacheStats delta = blockCache.getCache().stats();
             if (cacheStatsBaseline != null) {
                 delta = blockCache.getCache().stats().minus(cacheStatsBaseline);
@@ -297,7 +300,6 @@ public class PrefetchBufferpoolVsMMapBenchmark {
                     + ", loads=" + delta.loadCount()
                     + ", evictions=" + delta.evictionCount()
                     + ", avgLoadTime=" + String.format("%.2fms", delta.averageLoadPenalty() / 1_000_000.0) + "]");
-            System.out.println("[STATS] " + blockCache.prefetchStats());
             System.out.println("[STATS] " + pool.poolStats());
 
             //reset stats
@@ -325,27 +327,34 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     }
 
     private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+        long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
-
-        // Prefetch N blocks ahead — gives the async threadpool enough
-        // lead time to load before the read catches up
+        // Prefetch non-contiguous blocks ahead — each spaced STRIDE_BLOCKS apart
         if (prefetchEnabled) {
-                ts.threadInput.prefetch(ts.offset, PREFETCH_AHEAD);
+            for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                long prefetchOffset = ts.offset + i * strideBytes;
+                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                    ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                }
+            }
         }
 
         // Simulate query processing work (scoring, merging, collecting)
-        // that happens between block reads in real Lucene usage.
-        // This frees I/O bandwidth for prefetch to exploit.
-        Blackhole.consumeCPU(500);
+        //Blackhole.consumeCPU(500);
 
-        // Read current block
-        ts.threadInput.seek(ts.offset);
-        for (int i = 0; i < READS_PER_BLOCK; i++) {
-            bh.consume(ts.threadInput.readLong());
+        // Read 64 bytes from the start of each strided block
+        for (int i = 0; i < PREFETCH_AHEAD; i++) {
+            long blockOffset = ts.offset + i * strideBytes;
+            if (blockOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                ts.threadInput.seek(blockOffset);
+                for (int j = 0; j < READS_PER_BLOCK; j++) {
+                    bh.consume(ts.threadInput.readLong());
+                }
+            }
         }
 
-        // Advance to next block
-        ts.offset += BLOCK_SIZE;
+        // Advance past all strided blocks
+        ts.offset += PREFETCH_AHEAD * strideBytes;
         if (ts.offset + BLOCK_SIZE > ts.rangeEnd) {
             ts.offset = ts.rangeStart;
             ts.passCount++;
@@ -354,6 +363,5 @@ public class PrefetchBufferpoolVsMMapBenchmark {
                 blockCache.clear();
             }
         }
-
     }
 }

@@ -5,6 +5,13 @@
 package org.opensearch.index.store.benchmark;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
+import java.lang.foreign.Linker;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
@@ -74,7 +81,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool"/*,"mmap" */})
+    @Param({ "bufferpool","mmap" })
     private String mode;
 
     /**
@@ -83,7 +90,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({ "async", "inline_check", "off" })
+    @Param({ "async", /*"inline_check", "inline_load",*/ "off" })
     private String prefetchMode;
 
     /**
@@ -94,7 +101,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @Param({ "opensearch" /*, "jdk" */})
     private String executorType;
 
-    @Param({ /* "true"  ,*/ "false" })
+    @Param({ "true"  , "false" })
     private boolean cacheWarm;
 
     private Path tempDir;
@@ -113,6 +120,47 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private final AtomicInteger threadIndex = new AtomicInteger();
     private long fileLength;
     private int threadCount;
+    private Path testFilePath;
+    private java.lang.reflect.Field mmapPrefetchField; // Lucene's backoff counter field
+
+    // posix_fadvise via Panama FFI for dropping page cache
+    private static final int POSIX_FADV_DONTNEED = 4;
+    private static final MethodHandle OPEN_MH;
+    private static final MethodHandle CLOSE_MH;
+    private static final MethodHandle FADVISE_MH;
+
+    static {
+        Linker linker = Linker.nativeLinker();
+        SymbolLookup lookup = linker.defaultLookup();
+        OPEN_MH = linker.downcallHandle(
+            lookup.find("open").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
+        );
+        CLOSE_MH = linker.downcallHandle(
+            lookup.find("close").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)
+        );
+        FADVISE_MH = linker.downcallHandle(
+            lookup.find("posix_fadvise").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)
+        );
+    }
+
+    private static void dropPageCache(Path file) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment pathStr = arena.allocateUtf8String(file.toAbsolutePath().toString());
+            int fd = (int) OPEN_MH.invokeExact(pathStr, 0 /* O_RDONLY */);
+            if (fd >= 0) {
+                try {
+                    int rc = (int) FADVISE_MH.invokeExact(fd, 0L, 0L, POSIX_FADV_DONTNEED);
+                } finally {
+                    int rc = (int) CLOSE_MH.invokeExact(fd);
+                }
+            }
+        } catch (Throwable e) {
+            throw new RuntimeException("Failed to drop page cache", e);
+        }
+    }
 
     @Setup(Level.Trial)
     public void setup(org.openjdk.jmh.infra.BenchmarkParams params) throws Exception {
@@ -199,8 +247,24 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         } else {
             mmapDir = new MMapDirectory(tempDir);
             sharedInput = mmapDir.openInput("test.dat", IOContext.DEFAULT.withHints(DataAccessHint.RANDOM));
+            // Resolve Lucene's prefetch backoff field for resetting in benchmark
+            try {
+                Class<?> clazz = sharedInput.getClass();
+                while (clazz != null) {
+                    try {
+                        mmapPrefetchField = clazz.getDeclaredField("consecutivePrefetchHitCount");
+                        mmapPrefetchField.setAccessible(true);
+                        break;
+                    } catch (NoSuchFieldException e) {
+                        clazz = clazz.getSuperclass();
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("[WARN] Could not resolve prefetch backoff field: " + e);
+            }
         }
         fileLength = sharedInput.length();
+        testFilePath = tempDir.resolve("test.dat").toAbsolutePath().normalize();
     }
 
     private void initMetrics() {
@@ -365,55 +429,82 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
         if (!cacheWarm) {
-            for (int i = 0; i < PREFETCH_AHEAD; i++) {
-                long prefetchOffset = ts.offset + i * strideBytes;
-                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
-                    long t0 = System.nanoTime();
-                    FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
-                    blockCache.invalidate(key);
-                }
-            }
-        }
-
-
-        if ("async".equals(prefetchMode)) {
-            // Original path: submit to executor (tests executor overhead)
-            for (int i = 0; i < PREFETCH_AHEAD; i++) {
-                long prefetchOffset = ts.offset + i * strideBytes;
-                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
-                    long t0 = System.nanoTime();
-                    ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
-                    prefetchTimeNs.add(System.nanoTime() - t0);
-                    prefetchCalls.increment();
-                }
-            }
-        } else if ("inline_check".equals(prefetchMode)) {
-            // Inline cache check: skip executor submission if block is already cached
-            for (int i = 0; i < PREFETCH_AHEAD; i++) {
-                long prefetchOffset = ts.offset + i * strideBytes;
-                if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
-                    long t0 = System.nanoTime();
-                    FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
-                    if (blockCache.getCache().getIfPresent(key) == null) {
-                        // Only submit to executor if not cached
-                        ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+            if ("mmap".equals(mode)) {
+                dropPageCache(testFilePath);
+            } else {
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                        blockCache.invalidate(key);
                     }
-                    prefetchTimeNs.add(System.nanoTime() - t0);
-                    prefetchCalls.increment();
                 }
             }
         }
+
+
+
+            if ("async".equals(prefetchMode)) {
+                if ("mmap".equals(mode)) {
+                    // Disable Lucene's madvise backoff so every prefetch actually calls madvise
+                    if (mmapPrefetchField != null) {
+                        try {
+                            mmapPrefetchField.setInt(ts.threadInput, 0);
+                        } catch (Exception ignored) {
+                            System.out.println("Benchmark: unable to disable mmap prefetch backup");
+                        }
+                    }
+                }
+                // Original path: submit to executor (tests executor overhead)
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                        prefetchTimeNs.add(System.nanoTime() - t0);
+                        prefetchCalls.increment();
+                    }
+                }
+            } else if ("inline_check".equals(prefetchMode) && "bufferpool".equals(mode)) {
+                // Inline cache check: skip executor submission if block is already cached
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                        if (blockCache.getCache().getIfPresent(key) == null) {
+                            // Only submit to executor if not cached
+                            ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                        }
+                        prefetchTimeNs.add(System.nanoTime() - t0);
+                        prefetchCalls.increment();
+                    }
+                }
+            } else if ("inline_load".equals(prefetchMode) && "bufferpool".equals(mode)) {
+                // Inline load: call getOrLoad on calling thread, no executor submission
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                        blockCache.getOrLoad(key);
+                        prefetchTimeNs.add(System.nanoTime() - t0);
+                        prefetchCalls.increment();
+                    }
+                }
+            }
         // "off" mode: no prefetch at all
 
         // Simulate query processing work (scoring, merging, collecting)
         //Blackhole.consumeCPU(500);
 
-        // Read 64 bytes from the start of each strided block
+        // Read full block from each strided position
         for (int i = 0; i < PREFETCH_AHEAD; i++) {
             long blockOffset = ts.offset + i * strideBytes;
             if (blockOffset + BLOCK_SIZE <= ts.rangeEnd) {
                 ts.threadInput.seek(blockOffset);
-                for (int j = 0; j < READS_PER_BLOCK; j++) {
+                for (int j = 0; j < BLOCK_SIZE / Long.BYTES; j++) {
                     bh.consume(ts.threadInput.readLong());
                 }
             }
@@ -425,6 +516,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             ts.offset = ts.rangeStart;
             ts.passCount++;
             totalPasses.increment();
+
         }
     }
 }

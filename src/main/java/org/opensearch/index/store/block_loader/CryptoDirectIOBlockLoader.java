@@ -55,6 +55,8 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
     private final Pool<RefCountedMemorySegment> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
 
+    private int blockSize = -1;
+
     /**
      * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
      *
@@ -87,7 +89,9 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
         RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
-        int blockSize = Math.toIntExact(Files.getFileStore(filePath).getBlockSize());
+        if (this.blockSize < 0) {
+            this.blockSize = Math.toIntExact(Files.getFileStore(filePath).getBlockSize());
+        }
 
         try (
             Arena arena = Arena.ofConfined();

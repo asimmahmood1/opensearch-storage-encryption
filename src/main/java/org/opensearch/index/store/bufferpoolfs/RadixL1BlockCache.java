@@ -9,7 +9,6 @@ import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.LongAdder;
-import java.util.concurrent.locks.LockSupport;
 
 import org.opensearch.index.store.block.RefCountedMemorySegment;
 import org.opensearch.index.store.block_cache.BlockCache;
@@ -46,55 +45,31 @@ public class RadixL1BlockCache implements L1BlockCache {
         // L1 lookup — two plain array loads
         BlockCacheValue<RefCountedMemorySegment> v = table.get(blockIdx);
         if (v != null && v.tryPin()) {
-            int gen = v.value().getGeneration();
-            if (v.getGeneration() == gen) {
-                if (hitHolder != null) hitHolder.setWasCacheHit(true);
-                l1Hits.increment();
-                return v;
-            }
-            v.unpin();
-            table.remove(blockIdx);
+            if (hitHolder != null) hitHolder.setWasCacheHit(true);
+            l1Hits.increment();
+            return v;
         }
 
-        // L2 fallback with retry (same logic as BlockSlotTinyCache)
-        final int maxAttempts = 10;
+        // L2 hit
         FileBlockCacheKey key = new FileBlockCacheKey(path, blockOff);
-
-        for (int attempts = 0; attempts < maxAttempts; attempts++) {
-            v = cache.get(key);
-            if (v != null) {
-                int gen = v.value().getGeneration();
-                if (v.tryPin()) {
-                    if (v.value().getGeneration() == gen) {
-                        table.put(blockIdx, v);
-                        if (hitHolder != null) hitHolder.setWasCacheHit(true);
-                        l2Hits.increment();
-                        return v;
-                    }
-                    v.unpin();
-                }
-            }
-
-            BlockCacheValue<RefCountedMemorySegment> loaded = cache.getOrLoad(key);
-            if (loaded != null) {
-                int gen = loaded.value().getGeneration();
-                if (loaded.tryPin()) {
-                    if (loaded.value().getGeneration() == gen) {
-                        table.put(blockIdx, loaded);
-                        if (hitHolder != null) hitHolder.setWasCacheHit(false);
-                        misses.increment();
-                        return loaded;
-                    }
-                    loaded.unpin();
-                }
-            }
-
-            if (attempts < maxAttempts - 1) {
-                LockSupport.parkNanos(50_000L << attempts);
-            }
+        v = cache.get(key);
+        if (v != null && v.tryPin()) {
+            table.put(blockIdx, v);
+            if (hitHolder != null) hitHolder.setWasCacheHit(true);
+            l2Hits.increment();
+            return v;
         }
 
-        throw new IOException("Unable to pin memory segment for block offset " + blockOff + " after " + maxAttempts + " attempts");
+        // L2 load
+        v = cache.getOrLoad(key);
+        if (v != null && v.tryPin()) {
+            table.put(blockIdx, v);
+            if (hitHolder != null) hitHolder.setWasCacheHit(false);
+            misses.increment();
+            return v;
+        }
+
+        throw new IOException("Unable to acquire block at offset " + blockOff);
     }
 
     @Override

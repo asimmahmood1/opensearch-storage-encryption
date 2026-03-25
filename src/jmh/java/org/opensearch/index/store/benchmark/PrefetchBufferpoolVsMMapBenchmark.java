@@ -92,7 +92,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({ "async", /*"inline_check", "inline_load", "off", "*/ "async_getOrLoad" })
+    @Param({ /* "async", /*"inline_check", "inline_load","async_getOrLoad",*/ "off",  })
     private String prefetchMode;
 
     /**

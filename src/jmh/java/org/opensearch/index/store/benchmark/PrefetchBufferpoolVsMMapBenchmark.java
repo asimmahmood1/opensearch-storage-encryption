@@ -53,6 +53,8 @@ import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.bufferpoolfs.CachedMemorySegmentIndexInput;
+import org.opensearch.index.store.bufferpoolfs.L1BlockCache;
+import org.opensearch.index.store.bufferpoolfs.RadixL1BlockCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -81,7 +83,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool","mmap" })
+    @Param({ "bufferpool"/* ,"mmap"*/ })
     private String mode;
 
     /**
@@ -90,7 +92,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({ "async", /*"inline_check", "inline_load",*/ "off", "async_getOrLoad" })
+    @Param({ "async", /*"inline_check", "inline_load", "off", "*/ "async_getOrLoad" })
     private String prefetchMode;
 
     /**
@@ -101,8 +103,11 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @Param({ "opensearch" /*, "jdk" */})
     private String executorType;
 
-    @Param({ "true"  , "false" })
+    @Param({ "true"  /*, "false"*/ })
     private boolean cacheWarm;
+
+    @Param({ "tinyCache", "radix" })
+    private String l1CacheType;
 
     private Path tempDir;
     private Pool<RefCountedMemorySegment> pool;
@@ -212,6 +217,10 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         CryptoDirectIOBlockLoader loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encMetaCache);
         blockCache = new CaffeineBlockCache<>(caffeineCache, loader, MAX_BLOCKS_CACHE, prefetchTracker);
 
+        BufferPoolDirectory.L1BlockCacheFactory l1Factory = "radix".equals(l1CacheType)
+            ? RadixL1BlockCache::new
+            : org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache::new;
+
         readaheadWorker = new QueuingWorker(64, executor);
         bufferPoolDir = new BufferPoolDirectory(
             tempDir,
@@ -222,7 +231,8 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             blockCache,
             loader,
             readaheadWorker,
-            encMetaCache
+            encMetaCache,
+            l1Factory
         );
 
         // Write encrypted file via BufferPoolDirectory
@@ -407,9 +417,9 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         }
         if (sharedInput instanceof CachedMemorySegmentIndexInput cmsi) {
-            System.out.println("[STATS] " + cmsi.getBlockSlotTinyCache().stats());
-            cmsi.getBlockSlotTinyCache().clear();
-            cmsi.getBlockSlotTinyCache().resetStats();
+            System.out.println("[STATS] " + cmsi.getL1Cache().stats());
+            cmsi.getL1Cache().clear();
+            cmsi.getL1Cache().resetStats();
         }
     }
 /*

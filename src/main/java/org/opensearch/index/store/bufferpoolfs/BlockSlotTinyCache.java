@@ -71,7 +71,7 @@ import org.opensearch.index.store.block_cache.FileBlockCacheKey;
  * we avoid tight coupling of generation with pin -- they serve different purposes.
  *
  */
-public class BlockSlotTinyCache {
+public class BlockSlotTinyCache implements L1BlockCache {
 
     public static final class CacheHitHolder {
         private boolean wasCacheHit;
@@ -151,10 +151,12 @@ public class BlockSlotTinyCache {
         }
     }
 
+    @Override
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff) throws IOException {
         return acquireRefCountedValue(blockOff, null);
     }
 
+    @Override
     public BlockCacheValue<RefCountedMemorySegment> acquireRefCountedValue(long blockOff, CacheHitHolder hitHolder) throws IOException {
 
         final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
@@ -255,6 +257,7 @@ public class BlockSlotTinyCache {
         return (int) (blockIdx ^ (blockIdx >>> 32));
     }
 
+    @Override
     public void clear() {
         for (int i = 0; i < SLOT_COUNT; i++) {
             slotBlockIdx[i] = -1;
@@ -265,6 +268,7 @@ public class BlockSlotTinyCache {
         }
     }
 
+    @Override
     public String stats() {
         long l1 = l1Hits.sum(), l2 = l2Hits.sum(), m = misses.sum();
         long total = l1 + l2 + m;
@@ -280,6 +284,7 @@ public class BlockSlotTinyCache {
             );
     }
 
+    @Override
     public void resetStats() {
         l1Hits.reset();
         l2Hits.reset();

@@ -149,7 +149,18 @@ public class ReadBenchmarkBase {
         EncryptionMetadataCache encMetaCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
         BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(segmentPool, keyResolver, encMetaCache);
-        Worker worker = poolResources.getSharedReadaheadWorker();
+
+        // Disable read-ahead in benchmarks: use a no-op worker that rejects all schedules
+        Worker worker = new Worker() {
+            @Override public <T extends AutoCloseable> boolean schedule(
+                org.opensearch.index.store.block_cache.BlockCache<T> bc, Path p, long off, long cnt) { return false; }
+            @Override public boolean isRunning() { return true; }
+            @Override public int getQueueSize() { return 0; }
+            @Override public int getQueueCapacity() { return 0; }
+            @Override public void cancel(Path p) {}
+            @Override public boolean isReadAheadPaused() { return true; }
+            @Override public void close() {}
+        };
 
         @SuppressWarnings("unchecked")
         CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCache =
@@ -158,7 +169,8 @@ public class ReadBenchmarkBase {
         BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
             sharedCache.getCache(),
             loader,
-            poolResources.getMaxCacheBlocks()
+            poolResources.getMaxCacheBlocks(),
+            poolResources.getPrefetchTracker()
         );
 
         this.bufferPoolDirectory = new BufferPoolDirectory(

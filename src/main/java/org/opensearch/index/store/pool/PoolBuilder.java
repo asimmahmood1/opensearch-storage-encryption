@@ -245,6 +245,27 @@ public final class PoolBuilder {
      * @return SharedPoolResources containing the initialized pool and cache
      */
     public static PoolResources build(Settings settings, ThreadPool threadPool) {
+        ExecutorService prefetchExecutor = threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH);
+        return build(settings, prefetchExecutor);
+    }
+
+    /**
+     * Overload for contexts without a ThreadPool (tests, benchmarks).
+     * Creates a simple cached thread pool for prefetch tracking.
+     *
+     * @param settings the node settings for configuration
+     * @return SharedPoolResources containing the initialized pool and cache
+     */
+    public static PoolResources build(Settings settings) {
+        ExecutorService prefetchExecutor = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "prefetch-fallback");
+            t.setDaemon(true);
+            return t;
+        });
+        return build(settings, prefetchExecutor);
+    }
+
+    private static PoolResources build(Settings settings, ExecutorService prefetchExecutor) {
         long reservedPoolSizeInBytes = PoolSizeCalculator.calculatePoolSize(settings);
 
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
@@ -281,7 +302,6 @@ public final class PoolBuilder {
         int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
-        ExecutorService prefetchExecutor = threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH);
         PrefetchTracker prefetchTracker = new PrefetchTracker(prefetchExecutor);
 
         // Initialize shared cache with removal listener and get its executor

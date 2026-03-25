@@ -497,7 +497,7 @@ public final class QueuingWorker implements Worker {
 
     @Override
     public boolean isReadAheadPaused() {
-        return true;
+        return readAheadPaused;
     }
 
     @Override

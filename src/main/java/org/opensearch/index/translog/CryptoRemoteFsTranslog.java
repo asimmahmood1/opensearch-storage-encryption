@@ -71,7 +71,8 @@ public class CryptoRemoteFsTranslog extends RemoteFsTranslog {
             remoteTranslogTransferTracker,
             remoteStoreSettings,
             translogOperationHelper,
-            createCryptoChannelFactory(keyResolver, translogUUID)
+            createCryptoChannelFactory(keyResolver, translogUUID),
+            false
         );
 
         this.keyResolver = keyResolver;

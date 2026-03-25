@@ -15,6 +15,7 @@ import org.opensearch.index.translog.transfer.TransferService;
 import org.opensearch.index.translog.transfer.TransferSnapshot;
 import org.opensearch.index.translog.transfer.TranslogTransferManager;
 import org.opensearch.index.translog.transfer.listener.TranslogTransferListener;
+import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.indices.RemoteStoreSettings;
 
 /**
@@ -83,11 +84,11 @@ public class DecryptingTranslogTransferManager extends TranslogTransferManager {
      * @throws IOException if transfer fails
      */
     @Override
-    public boolean transferSnapshot(TransferSnapshot transferSnapshot, TranslogTransferListener translogTransferListener)
+    public boolean transferSnapshot(TransferSnapshot transferSnapshot, TranslogTransferListener translogTransferListener, CryptoMetadata cryptoMetadata)
         throws IOException {
         TransferSnapshot decryptingSnapshot = new DecryptingTransferSnapshot(transferSnapshot, keyResolver, translogUUID, cryptoFactory);
 
         // Call parent with decryption wrapper
-        return super.transferSnapshot(decryptingSnapshot, translogTransferListener);
+        return super.transferSnapshot(decryptingSnapshot, translogTransferListener, cryptoMetadata);
     }
 }

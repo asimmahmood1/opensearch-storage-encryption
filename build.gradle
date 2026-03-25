@@ -78,6 +78,7 @@ dependencies {
 
     implementation 'com.github.ben-manes.caffeine:caffeine:3.0.0'
     jmhImplementation "org.opensearch:opensearch:${opensearch_version}"
+    jmhImplementation sourceSets.test.output
     api "io.netty:netty-buffer:4.2.5.Final"
     api "io.netty:netty-transport:4.2.5.Final"
     api "io.netty:netty-transport-native-unix-common:4.2.5.Final"

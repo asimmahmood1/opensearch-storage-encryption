@@ -148,7 +148,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static void dropPageCache(Path file) {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment pathStr = arena.allocateUtf8String(file.toAbsolutePath().toString());
+            MemorySegment pathStr = arena.allocateFrom(file.toAbsolutePath().toString());
             int fd = (int) OPEN_MH.invokeExact(pathStr, 0 /* O_RDONLY */);
             if (fd >= 0) {
                 try {

@@ -112,7 +112,7 @@ public class BufferPoolDirectory extends FSDirectory {
         EncryptionMetadataCache encryptionMetadataCache
     )
         throws IOException {
-        this(path, lockFactory, provider, keyResolver, memorySegmentPool, blockCache, blockLoader, worker, encryptionMetadataCache, BlockSlotTinyCache::new);
+        this(path, lockFactory, provider, keyResolver, memorySegmentPool, blockCache, blockLoader, worker, encryptionMetadataCache, RadixL1BlockCache::new);
     }
 
     public BufferPoolDirectory(

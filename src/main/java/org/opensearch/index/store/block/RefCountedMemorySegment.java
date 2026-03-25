@@ -96,6 +96,14 @@ public final class RefCountedMemorySegment implements BlockCacheValue<RefCounted
         return slicedSegment;
     }
 
+    /**
+     * Returns the native base address of this segment for direct Unsafe access.
+     * Only safe to call while the segment is pinned (refCount > 0).
+     */
+    public long address() {
+        return slicedSegment.address();
+    }
+
     @Override
     public int getGeneration() {
         // Single volatile read of packed state.

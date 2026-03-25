@@ -90,7 +90,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({ "async", /*"inline_check", "inline_load",*/ "off" })
+    @Param({ "async", /*"inline_check", "inline_load",*/ "off", "async_getOrLoad" })
     private String prefetchMode;
 
     /**
@@ -493,6 +493,24 @@ public class PrefetchBufferpoolVsMMapBenchmark {
                         prefetchCalls.increment();
                     }
                 }
+            } else if ("async_getOrLoad".equals(prefetchMode) && "bufferpool".equals(mode)) {
+                // Async getOrLoad: submit individual getOrLoad calls to executor
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        FileBlockCacheKey key = new FileBlockCacheKey(ts.filePath, prefetchOffset);
+                        executor.submit(() -> {
+                            try {
+                                blockCache.getOrLoad(key);
+                            } catch (Exception e) { /* ignore */ }
+                        });
+                        prefetchTimeNs.add(System.nanoTime() - t0);
+                        prefetchCalls.increment();
+                    }
+                }
+            } else if (!"off".equals(prefetchMode)) {
+                throw new IllegalArgumentException("Unknown prefetchMode: " + prefetchMode + " (mode=" + mode + ")");
             }
         // "off" mode: no prefetch at all
 

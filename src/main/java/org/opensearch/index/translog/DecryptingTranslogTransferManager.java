@@ -84,11 +84,11 @@ public class DecryptingTranslogTransferManager extends TranslogTransferManager {
      * @throws IOException if transfer fails
      */
     @Override
-    public boolean transferSnapshot(TransferSnapshot transferSnapshot, TranslogTransferListener translogTransferListener, CryptoMetadata cryptoMetadata)
+    public boolean transferSnapshot(TransferSnapshot transferSnapshot, TranslogTransferListener translogTransferListener)
         throws IOException {
         TransferSnapshot decryptingSnapshot = new DecryptingTransferSnapshot(transferSnapshot, keyResolver, translogUUID, cryptoFactory);
 
         // Call parent with decryption wrapper
-        return super.transferSnapshot(decryptingSnapshot, translogTransferListener, cryptoMetadata);
+        return super.transferSnapshot(decryptingSnapshot, translogTransferListener);
     }
 }

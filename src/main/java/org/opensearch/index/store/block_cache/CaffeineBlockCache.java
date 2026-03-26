@@ -200,59 +200,18 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     }
 
     private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
-        long totalLoaded = 0;
-
-        // Check which blocks are already cached
-        FileBlockCacheKey[] missingKeys = new FileBlockCacheKey[(int) blockCount];
-        int missingCount = 0;
-        long cacheHitCount = 0;
-
+        long loaded = 0;
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
             FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
-            // check if this block is already in progress
-            if (prefetchTracker.putIfAbsent(key)) {
-                if (cache.getIfPresent(key) == null) {
-                    missingKeys[missingCount++] = key;
-                } else {
-                    prefetchTracker.remove(key);
-                    cacheHitCount++;
-                }
+            if (cache.getIfPresent(key) == null) {
+                getOrLoad(key);
+                loaded++;
             }
         }
-
-        if (cacheHitCount > 0) {
-            prefetchTracker.recordCacheHits(cacheHitCount);
+        if (loaded > 0) {
+            prefetchTracker.recordBlocksLoaded(loaded);
         }
-
-        if (missingCount == 0) {
-            return; // All blocks already cached
-        }
-
-        // Load consecutive ranges
-        int rangeStart = 0;
-        while (rangeStart < missingCount) {
-            long rangeStartOffset = missingKeys[rangeStart].offset();
-            int rangeLength = 1;
-
-            // Find consecutive blocks
-            while (rangeStart + rangeLength < missingCount
-                && missingKeys[rangeStart + rangeLength].offset() == rangeStartOffset + rangeLength * CACHE_BLOCK_SIZE) {
-                rangeLength++;
-            }
-            try {
-                long loadedFor = loadAllBlocks(filePath, rangeStartOffset, rangeLength);
-                totalLoaded += loadedFor;
-            } finally {
-                // Remove loaded blocks from prefetch tracker
-                for (int i = 0; i < rangeLength; i++) {
-                    prefetchTracker.remove(missingKeys[rangeStart + i]);
-                }
-            }
-            rangeStart += rangeLength;
-        }
-
-        prefetchTracker.recordBlocksLoaded(totalLoaded);
     }
 
     /**

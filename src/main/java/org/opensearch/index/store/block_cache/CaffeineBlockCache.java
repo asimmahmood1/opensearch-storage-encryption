@@ -199,18 +199,40 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         }
     }
 
-    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) throws IOException {
-        long loaded = 0;
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) {
+        BlockCacheKey[] keys = new BlockCacheKey[(int) blockCount];
+        int keyCount = 0;
         for (int i = 0; i < blockCount; i++) {
             long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
-            FileBlockCacheKey key = (FileBlockCacheKey) createBlockKey(filePath, blockOffset);
-            if (cache.getIfPresent(key) == null) {
-                getOrLoad(key);
-                loaded++;
+            BlockCacheKey key = createBlockKey(filePath, blockOffset);
+            if (prefetchTracker.putIfAbsent(key)) {
+                keys[keyCount++] = key;
             }
         }
-        if (loaded > 0) {
-            prefetchTracker.recordBlocksLoaded(loaded);
+
+        long[] loaded = { 0 };
+        for (int i = 0; i < keyCount; i++) {
+            BlockCacheKey key = keys[i];
+            try {
+                cache.get(key, k -> {
+                    try {
+                        V[] result = blockLoader.load(k.filePath(), k.offset(), 1, 50);
+                        @SuppressWarnings("unchecked")
+                        BlockCacheValue<T> value = (BlockCacheValue<T>) result[0];
+                        loaded[0]++;
+                        return value;
+                    } catch (Exception e) {
+                        return handleLoadException(k, e);
+                    }
+                });
+            } catch (Exception e) {
+                LOGGER.info("Prefetch load failed: path={} offset={}", filePath, key.offset(), e);
+            } finally {
+                prefetchTracker.remove(key);
+            }
+        }
+        if (loaded[0] > 0) {
+            prefetchTracker.recordBlocksLoaded(loaded[0]);
         }
     }
 

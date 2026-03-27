@@ -20,8 +20,10 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.locks.LockSupport;
 
 import javax.crypto.spec.SecretKeySpec;
 
@@ -50,11 +52,12 @@ import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_cache.PrefetchTracker;
+import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.bufferpoolfs.CachedMemorySegmentIndexInput;
 import org.opensearch.index.store.bufferpoolfs.L1BlockCache;
-import org.opensearch.index.store.bufferpoolfs.RadixL1BlockCache;
+//import org.opensearch.index.store.bufferpoolfs.RadixL1BlockCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
@@ -77,13 +80,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static final int BLOCK_SIZE = 8192;
     private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
-    private static final int PREFETCH_AHEAD = 16; // prefetch 4 non-contiguous blocks
+    private static final int PREFETCH_AHEAD = 4; // prefetch 4 non-contiguous blocks
     private static final int STRIDE_BLOCKS = 16; // blocks between each prefetched block
-    private static final int READS_PER_BLOCK = 64 / 8; // 8 longs = 64 bytes per block
+    private static final int READS_PER_BLOCK = 24 / 8; // 8 longs = 64 bytes per block
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool"/* ,"mmap"*/ })
+    @Param({ "bufferpool" ,"mmap" })
     private String mode;
 
     /**
@@ -92,7 +95,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({ /* "async", /*"inline_check", "inline_load","async_getOrLoad",*/ "off",  })
+    @Param({  "async", /*"inline_check", "inline_load","async_getOrLoad",*/ "off",  })
     private String prefetchMode;
 
     /**
@@ -100,14 +103,30 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "opensearch": OpenSearchThreadPoolExecutor (ThreadContext wrapping overhead)
      * - "jdk": plain Executors.newFixedThreadPool (no wrapping)
      */
-    @Param({ "opensearch" /*, "jdk" */})
+//   @Param({ "opensearch" /*, "jdk" */})
     private String executorType;
 
-    @Param({ "true"  /*, "false"*/ })
+    @Param({ "true" /* , "false" */ })
     private boolean cacheWarm;
 
-    @Param({ "tinyCache", "radix" })
+    @Param({ "tinyCache" /*, "radix"*/ })
     private String l1CacheType;
+
+    /** Simulated per-block IO latency in microseconds (0 = no delay, e.g. 500 to simulate EFS) */
+//    @Param({ "0",  "1000" , "2000" })
+    private long simulatedIoLatencyUs;
+
+    /** Whether to wait for async prefetch to complete before reading */
+//    @Param({ "false" })
+    private boolean awaitPrefetch;
+
+    /** Skip the read loop — measure prefetch overhead only */
+    @Param({ "true" })
+    private boolean skipRead;
+
+    /** Track loader calls per offset to detect duplicate IO */
+    private final ConcurrentHashMap<Long, AtomicInteger> loadCallsByOffset = new ConcurrentHashMap<>();
+    private final LongAdder duplicateLoads = new LongAdder();
 
     private Path tempDir;
     private Pool<RefCountedMemorySegment> pool;
@@ -153,7 +172,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
     private static void dropPageCache(Path file) {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment pathStr = arena.allocateFrom(file.toAbsolutePath().toString());
+            MemorySegment pathStr = arena.allocateUtf8String(file.toAbsolutePath().toString());
             int fd = (int) OPEN_MH.invokeExact(pathStr, 0 /* O_RDONLY */);
             if (fd >= 0) {
                 try {
@@ -214,12 +233,28 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             )
             .build();
 
-        CryptoDirectIOBlockLoader loader = new CryptoDirectIOBlockLoader(pool, keyResolver, encMetaCache);
+        CryptoDirectIOBlockLoader realLoader = new CryptoDirectIOBlockLoader(pool, keyResolver, encMetaCache);
+        BlockLoader<RefCountedMemorySegment> loader = (filePath, startOffset, blockCount, poolTimeoutMs) -> {
+            for (long b = 0; b < blockCount; b++) {
+                long off = startOffset + b * BLOCK_SIZE;
+                int count = loadCallsByOffset.computeIfAbsent(off, k -> new AtomicInteger()).incrementAndGet();
+                if (count > 1) {
+                    duplicateLoads.increment();
+                }
+            }
+            RefCountedMemorySegment[] result = realLoader.load(filePath, startOffset, blockCount, poolTimeoutMs);
+            if (simulatedIoLatencyUs > 0) {
+                LockSupport.parkNanos(simulatedIoLatencyUs * 1000L * blockCount);
+            }
+            return result;
+        };
         blockCache = new CaffeineBlockCache<>(caffeineCache, loader, MAX_BLOCKS_CACHE, prefetchTracker);
 
-        BufferPoolDirectory.L1BlockCacheFactory l1Factory = "radix".equals(l1CacheType)
-            ? RadixL1BlockCache::new
-            : org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache::new;
+     //   BufferPoolDirectory.L1BlockCacheFactory l1Factory = "radix".equals(l1CacheType)
+     //       ? RadixL1BlockCache::new
+     //       : org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache::new;
+
+        BufferPoolDirectory.L1BlockCacheFactory l1Factory = org.opensearch.index.store.bufferpoolfs.BlockSlotTinyCache::new;
 
         readaheadWorker = new QueuingWorker(64, executor);
         bufferPoolDir = new BufferPoolDirectory(
@@ -397,6 +432,11 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             System.out.println("[STATS] prefetch[calls=" + calls + ", totalMs=" + String.format("%.2f", timeNs / 1_000_000.0)
                 + ", avgUs=" + String.format("%.2f", timeNs / 1_000.0 / calls) + "]");
         }
+        long dupes = duplicateLoads.sumThenReset();
+        if (dupes > 0) {
+            System.out.println("[WARN] duplicate IO loads detected: " + dupes);
+        }
+        loadCallsByOffset.clear();
         if (blockCache != null) {
             System.out.println("[STATS] " + blockCache.prefetchStats());
             CacheStats delta = blockCache.getCache().stats();
@@ -425,17 +465,17 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 /*
     @Benchmark
     @Threads(1)
-    public void read_1Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+    public void read_1Threads(ThreadState ts, Blackhole bh) throws Exception {
         doRead(ts, bh);
     }
 */
     @Benchmark
     @Threads(4)
-    public void read_4Threads(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+    public void read_4Threads(ThreadState ts, Blackhole bh) throws Exception {
         doRead(ts, bh);
     }
 
-    private void doRead(ThreadState ts, Blackhole bh) throws IOException, InterruptedException {
+    private void doRead(ThreadState ts, Blackhole bh) throws Exception {
         long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
         if (!cacheWarm) {
@@ -524,16 +564,20 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             }
         // "off" mode: no prefetch at all
 
-        // Simulate query processing work (scoring, merging, collecting)
-        //Blackhole.consumeCPU(500);
+        // Wait for async prefetch to complete before reading
+        if (awaitPrefetch && !"off".equals(prefetchMode)) {
+            executor.submit(() -> {}).get();
+        }
 
         // Read full block from each strided position
-        for (int i = 0; i < PREFETCH_AHEAD; i++) {
-            long blockOffset = ts.offset + i * strideBytes;
-            if (blockOffset + BLOCK_SIZE <= ts.rangeEnd) {
-                ts.threadInput.seek(blockOffset);
-                for (int j = 0; j < BLOCK_SIZE / Long.BYTES; j++) {
-                    bh.consume(ts.threadInput.readLong());
+        if (!skipRead) {
+            for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                long blockOffset = ts.offset + i * strideBytes;
+                if (blockOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                    ts.threadInput.seek(blockOffset);
+                    for (int j = 0; j < BLOCK_SIZE / Long.BYTES; j++) {
+                        bh.consume(ts.threadInput.readLong());
+                    }
                 }
             }
         }

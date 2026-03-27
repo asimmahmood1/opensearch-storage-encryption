@@ -234,6 +234,10 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         if (loaded[0] > 0) {
             prefetchTracker.recordBlocksLoaded(loaded[0]);
         }
+        long cacheHits = keyCount - loaded[0];
+        if (cacheHits > 0) {
+            prefetchTracker.recordCacheHits(cacheHits);
+        }
     }
 
     /**

@@ -172,29 +172,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
     }
 
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        // Check for user overrides, otherwise calculate dynamically
-        int queueSize = PREFETCH_QUEUE_SIZE_SETTING.get(settings);
-        int threads = PREFETCH_THREAD_COUNT_SETTING.get(settings);
-
-        if (threads == -1) {
-            threads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
-        }
-        if (queueSize == -1) {
-            queueSize = threads * 1000;
-        }
-
-        log.info("Prefetch thread pool configured: threads={}, queueSize={}", threads, queueSize);
-
-        return Arrays
-            .asList(
-                new FixedExecutorBuilder(
-                    settings,
-                    CRYPTO_PLUGIN_THREADPOOL_PREFETCH,
-                    threads,
-                    queueSize,
-                    "plugins.crypto.threadpool.prefetch"
-                )
-            );
+        return Collections.emptyList();
     }
 
     /**

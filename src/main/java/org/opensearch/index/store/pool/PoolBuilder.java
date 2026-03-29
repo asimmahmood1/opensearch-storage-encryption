@@ -245,8 +245,17 @@ public final class PoolBuilder {
      * @return SharedPoolResources containing the initialized pool and cache
      */
     public static PoolResources build(Settings settings, ThreadPool threadPool) {
-        ExecutorService prefetchExecutor = threadPool.executor(CryptoDirectoryPlugin.CRYPTO_PLUGIN_THREADPOOL_PREFETCH);
-        return build(settings, prefetchExecutor);
+        int prefetchThreads = CryptoDirectoryPlugin.PREFETCH_THREAD_COUNT_SETTING.get(settings);
+        if (prefetchThreads == -1) {
+            prefetchThreads = Runtime.getRuntime().availableProcessors() * 4;
+        }
+        int prefetchQueueSize = CryptoDirectoryPlugin.PREFETCH_QUEUE_SIZE_SETTING.get(settings);
+        if (prefetchQueueSize == -1) {
+            prefetchQueueSize = prefetchThreads * 1000;
+        }
+        LOGGER.info("Prefetch ForkJoinPool: threads={}, maxInflight={}", prefetchThreads, prefetchQueueSize);
+        ExecutorService prefetchExecutor = new java.util.concurrent.ForkJoinPool(prefetchThreads);
+        return build(settings, prefetchExecutor, prefetchQueueSize);
     }
 
     /**
@@ -257,15 +266,11 @@ public final class PoolBuilder {
      * @return SharedPoolResources containing the initialized pool and cache
      */
     public static PoolResources build(Settings settings) {
-        ExecutorService prefetchExecutor = Executors.newCachedThreadPool(r -> {
-            Thread t = new Thread(r, "prefetch-fallback");
-            t.setDaemon(true);
-            return t;
-        });
-        return build(settings, prefetchExecutor);
+        ExecutorService prefetchExecutor = new java.util.concurrent.ForkJoinPool();
+        return build(settings, prefetchExecutor, 10_000);
     }
 
-    private static PoolResources build(Settings settings, ExecutorService prefetchExecutor) {
+    private static PoolResources build(Settings settings, ExecutorService prefetchExecutor, int maxInflight) {
         long reservedPoolSizeInBytes = PoolSizeCalculator.calculatePoolSize(settings);
 
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
@@ -302,7 +307,7 @@ public final class PoolBuilder {
         int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
-        PrefetchTracker prefetchTracker = new PrefetchTracker(prefetchExecutor);
+        PrefetchTracker prefetchTracker = new PrefetchTracker(prefetchExecutor, maxInflight);
 
         // Initialize shared cache with removal listener and get its executor
         BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder

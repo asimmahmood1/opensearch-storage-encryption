@@ -6,6 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -17,6 +18,7 @@ import java.util.concurrent.atomic.LongAdder;
 public class PrefetchTracker {
 
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
+    private final AtomicInteger inflightCount = new AtomicInteger();
     private final Executor executor;
 
     private final LongAdder prefetchCalls = new LongAdder();
@@ -27,15 +29,21 @@ public class PrefetchTracker {
     private final LongAdder executeRejections = new LongAdder();
     private final LongAdder prefetchTimeNs = new LongAdder();
 
-    private static final int MAX_INFLIGHT = 10_000;
+    private final int maxInflight;
 
     /**
      * Creates a prefetch tracker with the given async executor.
      *
      * @param executor the executor for async prefetch operations (must not be null)
+     * @param maxInflight maximum in-flight prefetch tasks before dropping new submissions
      */
-    public PrefetchTracker(Executor executor) {
+    public PrefetchTracker(Executor executor, int maxInflight) {
         this.executor = executor;
+        this.maxInflight = maxInflight;
+    }
+
+    public PrefetchTracker(Executor executor) {
+        this(executor, 10_000);
     }
 
     /**
@@ -45,7 +53,7 @@ public class PrefetchTracker {
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
-        if (inflight.size() > MAX_INFLIGHT) {
+        if (inflightCount.get() > maxInflight) {
             executeRejections.increment();
             return;
         }
@@ -64,6 +72,7 @@ public class PrefetchTracker {
      */
     public boolean putIfAbsent(BlockCacheKey key) {
         if (inflight.putIfAbsent(key, Boolean.TRUE) == null) {
+            inflightCount.incrementAndGet();
             return true;
         }
         blocksDeduped.increment();
@@ -71,15 +80,17 @@ public class PrefetchTracker {
     }
 
     public void remove(BlockCacheKey key) {
-        inflight.remove(key);
+        if (inflight.remove(key) != null) {
+            inflightCount.decrementAndGet();
+        }
     }
 
     public int size() {
-        return inflight.size();
+        return inflightCount.get();
     }
 
     public boolean isEmpty() {
-        return inflight.isEmpty();
+        return inflightCount.get() == 0;
     }
 
     public void clear() {

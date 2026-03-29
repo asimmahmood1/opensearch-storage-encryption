@@ -19,12 +19,15 @@ public class PrefetchTracker {
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
     private final Executor executor;
 
-    private final LongAdder loadMissingBlocksCalls = new LongAdder();
+    private final LongAdder prefetchCalls = new LongAdder();
     private final LongAdder blocksRequested = new LongAdder();
     private final LongAdder blocksLoaded = new LongAdder();
     private final LongAdder blocksDeduped = new LongAdder();
     private final LongAdder blocksCacheHit = new LongAdder();
     private final LongAdder executeRejections = new LongAdder();
+    private final LongAdder prefetchTimeNs = new LongAdder();
+
+    private static final int MAX_INFLIGHT = 10_000;
 
     /**
      * Creates a prefetch tracker with the given async executor.
@@ -37,10 +40,15 @@ public class PrefetchTracker {
 
     /**
      * Submits a task for async prefetch execution.
+     * Drops the task if too many prefetch operations are already in-flight.
      *
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
+        if (inflight.size() > MAX_INFLIGHT) {
+            executeRejections.increment();
+            return;
+        }
         try {
             executor.execute(task);
         } catch (Exception e) {
@@ -78,9 +86,13 @@ public class PrefetchTracker {
         inflight.clear();
     }
 
-    public void recordLoadMissingBlocksCall(long blockCount) {
-        loadMissingBlocksCalls.increment();
+    public void recordPrefetchCall(long blockCount) {
+        prefetchCalls.increment();
         blocksRequested.add(blockCount);
+    }
+
+    public void recordPrefetchTimeNs(long nanos) {
+        prefetchTimeNs.add(nanos);
     }
 
     public void recordBlocksLoaded(long count) {
@@ -92,17 +104,18 @@ public class PrefetchTracker {
     }
 
     public String stats() {
-        long calls = loadMissingBlocksCalls.sum();
+        long calls = prefetchCalls.sum();
         long requested = blocksRequested.sum();
         long loaded = blocksLoaded.sum();
         long deduped = blocksDeduped.sum();
         long cacheHit = blocksCacheHit.sum();
         long rejections = executeRejections.sum();
+        long timeMs = prefetchTimeNs.sum() / 1_000_000;
         double cacheHitRate = requested > 0 ? (100.0 * cacheHit / requested): 0;
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
-                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, inflight=%d, rejections=%d]",
+                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, hitRatio=%.2f%%, loadRatio=%.2f%%, timeMs=%d, inflight=%d, rejections=%d]",
                 calls,
                 requested,
                 loaded,
@@ -110,13 +123,14 @@ public class PrefetchTracker {
                 cacheHit,
                 cacheHitRate,
                 loadRatio,
+                timeMs,
                 inflight.size(),
                 rejections
             );
     }
 
     public long getCalls() {
-        return loadMissingBlocksCalls.sum();
+        return prefetchCalls.sum();
     }
 
     public long getBlocksRequested() {
@@ -139,13 +153,18 @@ public class PrefetchTracker {
         return executeRejections.sum();
     }
 
+    public long getPrefetchTimeNs() {
+        return prefetchTimeNs.sum();
+    }
+
     // Testing and benchmarking
     public void resetStats() {
-        loadMissingBlocksCalls.reset();
+        prefetchCalls.reset();
         blocksRequested.reset();
         blocksLoaded.reset();
         blocksDeduped.reset();
         blocksCacheHit.reset();
         executeRejections.reset();
+        prefetchTimeNs.reset();
     }
 }

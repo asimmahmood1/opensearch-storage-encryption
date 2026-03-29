@@ -185,7 +185,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      */
     @Override
     public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
-        prefetchTracker.recordLoadMissingBlocksCall(blockCount);
+        prefetchTracker.recordPrefetchCall(blockCount);
+        long t0 = System.nanoTime();
         try {
             prefetchTracker.execute(() -> {
                 try {
@@ -196,6 +197,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
             });
         } catch (Exception e) {
             LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
+        } finally {
+            prefetchTracker.recordPrefetchTimeNs(System.nanoTime() - t0);
         }
     }
 
@@ -211,6 +214,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         }
 
         long[] loaded = { 0 };
+        long failed = 0;
         for (int i = 0; i < keyCount; i++) {
             BlockCacheKey key = keys[i];
             try {
@@ -226,7 +230,8 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                     }
                 });
             } catch (Exception e) {
-                LOGGER.info("Prefetch load failed: path={} offset={}", filePath, key.offset(), e);
+                LOGGER.warn("Prefetch load failed: path={} offset={}", filePath, key.offset(), e);
+                failed++;
             } finally {
                 prefetchTracker.remove(key);
             }
@@ -234,7 +239,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         if (loaded[0] > 0) {
             prefetchTracker.recordBlocksLoaded(loaded[0]);
         }
-        long cacheHits = keyCount - loaded[0];
+        long cacheHits = keyCount - loaded[0] - failed;
         if (cacheHits > 0) {
             prefetchTracker.recordCacheHits(cacheHits);
         }

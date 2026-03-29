@@ -86,7 +86,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
-    @Param({ "bufferpool" ,"mmap" })
+    @Param({ "bufferpool", "mmap" })
     private String mode;
 
     /**
@@ -95,7 +95,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "async": prefetch via executor (original path)
      * - "inline_check": check cache inline, skip executor if all cached
      */
-    @Param({  "async", /*"inline_check", "inline_load","async_getOrLoad",*/ "off",  })
+    @Param({  "async", /*"inline_check", "inline_load","async_getOrLoad", "off", */"l1_then_prefetch" })
     private String prefetchMode;
 
     /**
@@ -103,13 +103,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
      * - "opensearch": OpenSearchThreadPoolExecutor (ThreadContext wrapping overhead)
      * - "jdk": plain Executors.newFixedThreadPool (no wrapping)
      */
-//   @Param({ "opensearch" /*, "jdk" */})
+    @Param({ "opensearch" , /* "jdk",*/ "forkjoin" })
     private String executorType;
 
     @Param({ "true" /* , "false" */ })
     private boolean cacheWarm;
 
-    @Param({ "tinyCache" /*, "radix"*/ })
+    @Param({ "tinyCache",  "radix" })
     private String l1CacheType;
 
     /** Simulated per-block IO latency in microseconds (0 = no delay, e.g. 500 to simulate EFS) */
@@ -203,7 +203,14 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         // Setup BufferPoolDirectory components
         pool = new MemorySegmentPool(TOTAL_MEMORY_POOL, BLOCK_SIZE);
         if ("jdk".equals(executorType)) {
-            executor = Executors.newFixedThreadPool(32);
+            executor = new java.util.concurrent.ThreadPoolExecutor(
+                32, 32, 0L, TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(10000),
+                OpenSearchExecutors.daemonThreadFactory("prefetch-worker"),
+                (r, e) -> { /* drop — prefetch is best-effort */ }
+            );
+        } else if ("forkjoin".equals(executorType)) {
+            executor = new java.util.concurrent.ForkJoinPool(32);
         } else {
             executor = OpenSearchExecutors.newFixed(
                 "prefetch-worker",
@@ -399,11 +406,15 @@ public class PrefetchBufferpoolVsMMapBenchmark {
         int passCount = 0;
         IndexInput threadInput;
         Path filePath; // cached normalized path for inline cache check
+        L1BlockCache l1Cache; // for l1_then_prefetch mode
 
         @Setup(Level.Trial)
         public void setupThread(PrefetchBufferpoolVsMMapBenchmark bench) {
             threadInput = bench.sharedInput.clone();
             filePath = bench.tempDir.resolve("test.dat").toAbsolutePath().normalize();
+            if (threadInput instanceof CachedMemorySegmentIndexInput cmsi) {
+                l1Cache = cmsi.getL1Cache();
+            }
             int idx = bench.threadIndex.getAndIncrement();
             int threads = bench.threadCount;
             long totalBlocks = bench.fileLength / BLOCK_SIZE;
@@ -476,6 +487,12 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     }
 
     private void doRead(ThreadState ts, Blackhole bh) throws Exception {
+        if (skipRead && "off".equals(prefetchMode)) {
+            throw new IllegalArgumentException("skipRead=true with prefetchMode=off is a no-op benchmark");
+        }
+        if ("mmap".equals(mode) && ("forkjoin".equals(executorType) || "l1_then_prefetch".equals(prefetchMode))) {
+            throw new IllegalArgumentException("forkjoin executor and l1_then_prefetch are bufferpool-only");
+        }
         long strideBytes = (long) STRIDE_BLOCKS * BLOCK_SIZE;
 
         if (!cacheWarm) {
@@ -555,6 +572,19 @@ public class PrefetchBufferpoolVsMMapBenchmark {
                                 blockCache.getOrLoad(key);
                             } catch (Exception e) { /* ignore */ }
                         });
+                        prefetchTimeNs.add(System.nanoTime() - t0);
+                        prefetchCalls.increment();
+                    }
+                }
+            } else if ("l1_then_prefetch".equals(prefetchMode) && "bufferpool".equals(mode) && ts.l1Cache != null) {
+                // Check L1 radix cache first, only prefetch on miss
+                for (int i = 0; i < PREFETCH_AHEAD; i++) {
+                    long prefetchOffset = ts.offset + i * strideBytes;
+                    if (prefetchOffset + BLOCK_SIZE <= ts.rangeEnd) {
+                        long t0 = System.nanoTime();
+                        if (!ts.l1Cache.contains(prefetchOffset)) {
+                            ts.threadInput.prefetch(prefetchOffset, BLOCK_SIZE);
+                        }
                         prefetchTimeNs.add(System.nanoTime() - t0);
                         prefetchCalls.increment();
                     }

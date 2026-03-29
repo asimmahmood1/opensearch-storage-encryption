@@ -33,6 +33,11 @@ public interface L1BlockCache {
 
     void clear();
 
+    /** Returns true if the block at the given offset is present in L1 (no load, no pin). */
+    default boolean contains(long blockOffset) {
+        return false;
+    }
+
     String stats();
 
     void resetStats();

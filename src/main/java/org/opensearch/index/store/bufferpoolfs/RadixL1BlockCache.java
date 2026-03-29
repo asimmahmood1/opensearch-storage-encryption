@@ -78,6 +78,11 @@ public class RadixL1BlockCache implements L1BlockCache {
     }
 
     @Override
+    public boolean contains(long blockOff) {
+        return table.get(blockOff >>> CACHE_BLOCK_SIZE_POWER) != null;
+    }
+
+    @Override
     public String stats() {
         long l1 = l1Hits.sum(), l2 = l2Hits.sum(), m = misses.sum();
         long total = l1 + l2 + m;

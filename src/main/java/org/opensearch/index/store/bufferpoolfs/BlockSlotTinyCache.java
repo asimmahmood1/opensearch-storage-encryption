@@ -258,6 +258,16 @@ public class BlockSlotTinyCache implements L1BlockCache {
     }
 
     @Override
+    public boolean contains(long blockOff) {
+        final long blockIdx = blockOff >>> CACHE_BLOCK_SIZE_POWER;
+        final int slotIdx = (int) ((blockIdx ^ (blockIdx >>> 17)) & SLOT_MASK);
+        final long stamp = (long) STAMP_ARR.getAcquire(slotStamp, slotIdx);
+        return stamp != 0L
+            && (int) stamp == hashBlockIdx(blockIdx)
+            && slotBlockIdx[slotIdx] == blockIdx;
+    }
+
+    @Override
     public void clear() {
         for (int i = 0; i < SLOT_COUNT; i++) {
             slotBlockIdx[i] = -1;

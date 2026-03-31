@@ -106,10 +106,10 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     @Param({ "opensearch" , /* "jdk",*/ "forkjoin" })
     private String executorType;
 
-    @Param({ "true" /* , "false" */ })
+    @Param({ /* "true"  ,*/ "false" })
     private boolean cacheWarm;
 
-    @Param({ "tinyCache",  "radix" })
+    @Param({ "tinyCache"/*,  "radix"*/ })
     private String l1CacheType;
 
     /** Simulated per-block IO latency in microseconds (0 = no delay, e.g. 500 to simulate EFS) */
@@ -121,7 +121,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private boolean awaitPrefetch;
 
     /** Skip the read loop — measure prefetch overhead only */
-    @Param({ "true" })
+    @Param({ /*"true",*/ "false" })
     private boolean skipRead;
 
     /** Track loader calls per offset to detect duplicate IO */

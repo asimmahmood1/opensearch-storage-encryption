@@ -82,7 +82,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private static final long FILE_SIZE = 100L * 1024 * 1024; // 100MB
     private static final int PREFETCH_AHEAD = 4; // prefetch 4 non-contiguous blocks
     private static final int STRIDE_BLOCKS = 16; // blocks between each prefetched block
-    private static final int READS_PER_BLOCK = 24 / 8; // 8 longs = 64 bytes per block
+    private static final int READS_PER_BLOCK = 8 / 8; // 8 longs = 64 bytes per block
     private static final long TOTAL_MEMORY_POOL = 256L * 1024 * 1024; // 256MB
     private static final int MAX_BLOCKS_CACHE = 15_000;
 
@@ -113,7 +113,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private String l1CacheType;
 
     /** Simulated per-block IO latency in microseconds (0 = no delay, e.g. 500 to simulate EFS) */
-//    @Param({ "0",  "1000" , "2000" })
+    @Param({ "0",  "1000" , "2000" })
     private long simulatedIoLatencyUs;
 
     /** Whether to wait for async prefetch to complete before reading */
@@ -147,11 +147,13 @@ public class PrefetchBufferpoolVsMMapBenchmark {
     private Path testFilePath;
     private java.lang.reflect.Field mmapPrefetchField; // Lucene's backoff counter field
 
-    // posix_fadvise via Panama FFI for dropping page cache
+    // posix_fadvise and posix_madvise via Panama FFI for dropping page cache
     private static final int POSIX_FADV_DONTNEED = 4;
+    private static final int MADV_DONTNEED = 4;
     private static final MethodHandle OPEN_MH;
     private static final MethodHandle CLOSE_MH;
     private static final MethodHandle FADVISE_MH;
+    private static final MethodHandle MADVISE_MH;
 
     static {
         Linker linker = Linker.nativeLinker();
@@ -168,6 +170,11 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             lookup.find("posix_fadvise").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)
         );
+        // Linux-native madvise (not posix_madvise) — actually discards file-backed pages
+        MADVISE_MH = linker.downcallHandle(
+            lookup.find("madvise").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)
+        );
     }
 
     private static void dropPageCache(Path file) {
@@ -183,6 +190,30 @@ public class PrefetchBufferpoolVsMMapBenchmark {
             }
         } catch (Throwable e) {
             throw new RuntimeException("Failed to drop page cache", e);
+        }
+    }
+
+    /** Use posix_madvise(DONTNEED) on mmap'd segments to force page eviction. */
+    private void madviseDropPages() {
+        try {
+            java.lang.reflect.Field segField = null;
+            Class<?> clazz = sharedInput.getClass();
+            while (clazz != null) {
+                try {
+                    segField = clazz.getDeclaredField("segments");
+                    segField.setAccessible(true);
+                    break;
+                } catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
+            }
+            if (segField == null) return;
+            MemorySegment[] segments = (MemorySegment[]) segField.get(sharedInput);
+            for (MemorySegment seg : segments) {
+                if (seg != null && seg.byteSize() > 0) {
+                    int rc = (int) MADVISE_MH.invokeExact(seg, seg.byteSize(), MADV_DONTNEED);
+                }
+            }
+        } catch (Throwable e) {
+            throw new RuntimeException("Failed to madvise DONTNEED", e);
         }
     }
 
@@ -497,6 +528,7 @@ public class PrefetchBufferpoolVsMMapBenchmark {
 
         if (!cacheWarm) {
             if ("mmap".equals(mode)) {
+                madviseDropPages();
                 dropPageCache(testFilePath);
             } else {
                 for (int i = 0; i < PREFETCH_AHEAD; i++) {

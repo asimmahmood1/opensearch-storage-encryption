@@ -112,11 +112,13 @@ public class ColdPrefetchLatencyBenchmark {
     private final List<Long> totalTimeSamples = new ArrayList<>();
     private final List<Long> readByteSamples = new ArrayList<>();
 
-    // --- posix_fadvise via Panama FFI ---
+    // --- posix_fadvise and posix_madvise via Panama FFI ---
     private static final int POSIX_FADV_DONTNEED = 4;
+    private static final int MADV_DONTNEED = 4;
     private static final MethodHandle OPEN_MH;
     private static final MethodHandle CLOSE_MH;
     private static final MethodHandle FADVISE_MH;
+    private static final MethodHandle MADVISE_MH;
 
     static {
         Linker linker = Linker.nativeLinker();
@@ -131,6 +133,11 @@ public class ColdPrefetchLatencyBenchmark {
             lookup.find("posix_fadvise").orElseThrow(),
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                 ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
+        // Linux-native madvise (not posix_madvise) — actually discards file-backed pages
+        MADVISE_MH = linker.downcallHandle(
+            lookup.find("madvise").orElseThrow(),
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
     }
 
     private static void dropPageCache(Path file) {
@@ -146,6 +153,31 @@ public class ColdPrefetchLatencyBenchmark {
             }
         } catch (Throwable e) {
             throw new RuntimeException("Failed to drop page cache", e);
+        }
+    }
+
+    /** Use posix_madvise(DONTNEED) on mmap'd segments to force page eviction. */
+    private void madviseDropPages() {
+        try {
+            // Get the MemorySegment[] segments field from MemorySegmentIndexInput
+            java.lang.reflect.Field segField = null;
+            Class<?> clazz = sharedInput.getClass();
+            while (clazz != null) {
+                try {
+                    segField = clazz.getDeclaredField("segments");
+                    segField.setAccessible(true);
+                    break;
+                } catch (NoSuchFieldException e) { clazz = clazz.getSuperclass(); }
+            }
+            if (segField == null) return;
+            MemorySegment[] segments = (MemorySegment[]) segField.get(sharedInput);
+            for (MemorySegment seg : segments) {
+                if (seg != null && seg.byteSize() > 0) {
+                    int rc = (int) MADVISE_MH.invokeExact(seg, seg.byteSize(), MADV_DONTNEED);
+                }
+            }
+        } catch (Throwable e) {
+            throw new RuntimeException("Failed to madvise DONTNEED", e);
         }
     }
 
@@ -256,6 +288,21 @@ public class ColdPrefetchLatencyBenchmark {
                 blockCache.invalidate(key);
             }
             prefetchTracker.resetStats();
+        } else {
+            // Prewarm mmap: exercise prefetch + readByte so JIT compiles
+            // madvise/mincore paths and NativeAccess internals are initialized.
+            for (int i = 0; i < 20; i++) {
+                long off = (long) i * BLOCK_SIZE;
+                if (off + BLOCK_SIZE > sharedInput.length()) break;
+                if (mmapPrefetchField != null) {
+                    try { mmapPrefetchField.setInt(sharedInput, 0); } catch (Exception ignored) {}
+                }
+                sharedInput.prefetch(off, BLOCK_SIZE);
+                sharedInput.seek(off);
+                sharedInput.readByte();
+            }
+            dropPageCache(testFilePath);
+            madviseDropPages();
         }
     }
 
@@ -266,7 +313,8 @@ public class ColdPrefetchLatencyBenchmark {
             FileBlockCacheKey key = new FileBlockCacheKey(testFilePath, currentOffset);
             blockCache.invalidate(key);
         } else {
-            dropPageCache(testFilePath);
+            madviseDropPages();
+            dropPageCache(testFilePath); // belt and suspenders
             if (mmapPrefetchField != null) {
                 try { mmapPrefetchField.setInt(sharedInput, 0); } catch (Exception ignored) {}
             }

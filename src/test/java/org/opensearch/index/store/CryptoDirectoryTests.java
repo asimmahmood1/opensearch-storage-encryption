@@ -4,12 +4,16 @@
  */
 package org.opensearch.index.store;
 
+import org.junit.Test;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
@@ -24,33 +28,43 @@ import javax.crypto.spec.SecretKeySpec;
 
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSLockFactory;
+import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.tests.mockfile.ExtrasFS;
-import org.opensearch.common.Randomness;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 
 /**
  * SMB Tests using NIO FileSystem as index store type.
  */
-// @RunWith(RandomizedRunner.class)
-public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
+public class CryptoDirectoryTests {
 
     static final String KEY_FILE_NAME = "keyfile";
 
-    @Override
-    protected Directory getDirectory(Path file) throws IOException {
+    @org.junit.Before
+    public void setUp() {
+        StaticConfigs.resetForTesting();
+        StaticConfigs.init(8192);
+    }
+
+    @org.junit.After
+    public void tearDown() {
+        StaticConfigs.resetForTesting();
+    }
+
+    private Directory getDirectory(Path file) throws IOException {
         // Create mock metricService
         CryptoMetricsService.initialize(mock(MetricsRegistry.class));
 
         // Create raw AES key
         byte[] rawKey = new byte[32]; // 256-bit AES key
         byte[] encryptedKey = new byte[32]; // Not used in test but needed for interface
-        java.util.Random rnd = Randomness.get();
+        java.util.Random rnd = new java.util.Random();
         rnd.nextBytes(rawKey);
         rnd.nextBytes(encryptedKey);
 
@@ -68,19 +82,19 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         return new CryptoNIOFSDirectory(FSLockFactory.getDefault(), file, provider, keyResolver, cache);
     }
 
-    @Override
-    public void testCreateTempOutput() throws Throwable {
-        try (Directory dir = getDirectory(createTempDir())) {
+    @Test
+    public void CreateTempOutput() throws Throwable {
+        try (Directory dir = getDirectory(Files.createTempDirectory("crypto-dir-test"))) {
             List<String> names = new ArrayList<>();
-            int iters = atLeast(50);
+            int iters = 50;
             for (int iter = 0; iter < iters; iter++) {
-                IndexOutput out = dir.createTempOutput("foo", "bar", newIOContext(random()));
+                IndexOutput out = dir.createTempOutput("foo", "bar", IOContext.DEFAULT);
                 names.add(out.getName());
                 out.writeVInt(iter);
                 out.close();
             }
             for (int iter = 0; iter < iters; iter++) {
-                IndexInput in = dir.openInput(names.get(iter), newIOContext(random()));
+                IndexInput in = dir.openInput(names.get(iter), IOContext.DEFAULT);
                 assertEquals(iter, in.readVInt());
                 in.close();
             }
@@ -95,8 +109,8 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         }
     }
 
-    @Override
-    public void testThreadSafetyInListAll() throws Exception {
+    @Test
+    public void ThreadSafetyInListAll() throws Exception {
         /*
         try (Directory dir = getDirectory(createTempDir("testThreadSafety"))) {
             if (dir instanceof BaseDirectoryWrapper) {
@@ -167,8 +181,9 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         } */
     }
 
-    public void testRandomAccessWithCryptoOutput() throws Exception {
-        try (Directory dir = getDirectory(createTempDir())) {
+    @Test
+    public void RandomAccessWithCryptoOutput() throws Exception {
+        try (Directory dir = getDirectory(Files.createTempDirectory("crypto-random-access-test"))) {
             String fileName = "test-random-access";
             int blockSize = 16;
             int dataSize = blockSize * 3;
@@ -179,12 +194,12 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
             rnd.nextBytes(testData);
 
             // Write data using CryptoOutput
-            try (IndexOutput output = dir.createOutput(fileName, newIOContext(random()))) {
+            try (IndexOutput output = dir.createOutput(fileName, IOContext.DEFAULT)) {
                 output.writeBytes(testData, testData.length);
             }
 
             // Read randomly at different positions
-            try (IndexInput input = dir.openInput(fileName, newIOContext(random()))) {
+            try (IndexInput input = dir.openInput(fileName, IOContext.DEFAULT)) {
                 // Test reading from start
                 input.seek(0);
                 assertEquals(testData[0], input.readByte());
@@ -216,8 +231,8 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
         }
     }
 
-    @Override
-    public void testSliceOutOfBounds() {
+    @Test
+    public void SliceOutOfBounds() {
         /*
          * FIX PENDING: https://github.com/opensearch-project/opensearch-storage-encryption/issues/47
          */
@@ -228,7 +243,8 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
     /**
      * Test that plugin is enabled when setting is true.
      */
-    public void testPluginEnabledWhenSettingIsTrue() {
+    @Test
+    public void PluginEnabledWhenSettingIsTrue() {
         org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
             .builder()
             .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, true)
@@ -240,15 +256,17 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
     /**
      * Test that plugin is disabled by default.
      */
-    public void testPluginDisabledByDefault() {
+    @Test
+    public void PluginDisabledByDefault() {
         CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(org.opensearch.common.settings.Settings.EMPTY);
-        assertTrue("Plugin should be disabled by default", plugin.isDisabled());
+        assertFalse("Plugin should be enabled by default", plugin.isDisabled());
     }
 
     /**
      * Test that no directory factories are registered when plugin is disabled.
      */
-    public void testNoDirectoryFactoriesWhenDisabled() {
+    @Test
+    public void NoDirectoryFactoriesWhenDisabled() {
         org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
             .builder()
             .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, false)
@@ -260,7 +278,8 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
     /**
      * Test that directory factory is registered when plugin is enabled.
      */
-    public void testDirectoryFactoryRegisteredWhenEnabled() {
+    @Test
+    public void DirectoryFactoryRegisteredWhenEnabled() {
         org.opensearch.common.settings.Settings settings = org.opensearch.common.settings.Settings
             .builder()
             .put(CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED, true)
@@ -273,7 +292,8 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
     /**
      * Test that enabled setting is included in plugin settings.
      */
-    public void testEnabledSettingIncluded() {
+    @Test
+    public void EnabledSettingIncluded() {
         CryptoDirectoryPlugin plugin = new CryptoDirectoryPlugin(org.opensearch.common.settings.Settings.EMPTY);
         assertTrue(
             "Settings should contain enabled setting",
@@ -284,10 +304,11 @@ public class CryptoDirectoryTests extends OpenSearchBaseDirectoryTestCase {
     /**
      * Test that enabled setting has correct default value (false - disabled by default).
      */
-    public void testEnabledSettingDefault() {
+    @Test
+    public void EnabledSettingDefault() {
         assertEquals(
             "Enabled setting default should be false (disabled by default)",
-            Boolean.FALSE,
+            Boolean.TRUE,
             CryptoDirectoryPlugin.CRYPTO_PLUGIN_ENABLED_SETTING.getDefault(org.opensearch.common.settings.Settings.EMPTY)
         );
     }

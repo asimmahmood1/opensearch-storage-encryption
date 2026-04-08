@@ -4,6 +4,9 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -18,11 +21,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.test.OpenSearchTestCase;
 
-public class QueuingWorkerTests extends OpenSearchTestCase {
+public class QueuingWorkerTests {
 
     private static final Path TEST_PATH = Paths.get("/test/file.dat");
 
@@ -33,7 +36,6 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     @SuppressWarnings("unchecked")
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         executor = Executors.newFixedThreadPool(2);
         mockBlockCache = (BlockCache<AutoCloseable>) mock(BlockCache.class);
     }
@@ -47,13 +49,13 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
             executor.shutdown();
             executor.awaitTermination(5, TimeUnit.SECONDS);
         }
-        super.tearDown();
     }
 
     /**
      * Tests basic worker creation and properties.
      */
-    public void testWorkerCreation() {
+    @Test
+    public void WorkerCreation() {
         worker = new QueuingWorker(100, executor);
 
         assertTrue(worker.isRunning());
@@ -65,11 +67,12 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests that worker can accept and process a schedule request.
      */
-    public void testBasicSchedule() throws Exception {
+    @Test
+    public void BasicSchedule() throws Exception {
         worker = new QueuingWorker(100, executor);
 
         // Mock successful load
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenReturn(Map.of());
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenReturn(0L);
 
         boolean accepted = worker.schedule(mockBlockCache, TEST_PATH, 0, 10);
 
@@ -78,18 +81,19 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         // Give worker time to process
         Thread.sleep(100);
 
-        // Verify loadForPrefetch was called
-        verify(mockBlockCache).loadForPrefetch(TEST_PATH, 0, 10);
+        // Verify loadForReadAhead was called
+        verify(mockBlockCache).loadAllBlocks(TEST_PATH, 0, 10);
     }
 
     /**
      * Tests that worker respects queue capacity.
      */
-    public void testQueueCapacity() throws Exception {
+    @Test
+    public void QueueCapacity() throws Exception {
         worker = new QueuingWorker(2, executor);
 
         // Make BlockCache slow to process
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             Thread.sleep(500);
             return Map.of();
         });
@@ -108,7 +112,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests worker can be closed safely.
      */
-    public void testWorkerClose() {
+    @Test
+    public void WorkerClose() {
         worker = new QueuingWorker(100, executor);
 
         assertTrue(worker.isRunning());
@@ -125,11 +130,12 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests that worker can cancel pending requests for a specific path.
      */
-    public void testCancelPath() throws Exception {
+    @Test
+    public void CancelPath() throws Exception {
         worker = new QueuingWorker(100, executor);
 
         // Make loads slow
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenAnswer(invocation -> {
             Thread.sleep(200);
             return Map.of();
         });
@@ -152,7 +158,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests that isReadAheadPaused returns false initially.
      */
-    public void testInitialPauseState() {
+    @Test
+    public void InitialPauseState() {
         worker = new QueuingWorker(100, executor);
 
         assertFalse("Worker should not be paused initially", worker.isReadAheadPaused());
@@ -161,7 +168,8 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests queue size and capacity getters.
      */
-    public void testQueueMetrics() {
+    @Test
+    public void QueueMetrics() {
         worker = new QueuingWorker(50, executor);
 
         assertEquals(50, worker.getQueueCapacity());
@@ -171,10 +179,11 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
     /**
      * Tests worker handles large block counts by chunking.
      */
-    public void testLargeBlockCountChunking() throws Exception {
+    @Test
+    public void LargeBlockCountChunking() throws Exception {
         worker = new QueuingWorker(200, executor);
 
-        when(mockBlockCache.loadForPrefetch(any(), anyLong(), anyLong())).thenReturn(Map.of());
+        when(mockBlockCache.loadAllBlocks(any(), anyLong(), anyLong())).thenReturn(0L);
 
         // Request 200 blocks (should be split into chunks of 128 max)
         boolean accepted = worker.schedule(mockBlockCache, TEST_PATH, 0, 200);
@@ -185,6 +194,6 @@ public class QueuingWorkerTests extends OpenSearchTestCase {
         Thread.sleep(200);
 
         // Should have been called at least twice (200/128 = 2 chunks)
-        verify(mockBlockCache, org.mockito.Mockito.atLeast(2)).loadForPrefetch(any(), anyLong(), anyLong());
+        verify(mockBlockCache, org.mockito.Mockito.atLeast(2)).loadAllBlocks(any(), anyLong(), anyLong());
     }
 }

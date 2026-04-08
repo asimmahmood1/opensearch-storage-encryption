@@ -21,19 +21,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
-import org.opensearch.test.OpenSearchTestCase;
 
 @SuppressWarnings("preview")
-public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
+public class RefCountedMemorySegmentTests {
 
     private Arena arena;
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         // Initialize with a mock metrics registry for testing
         CryptoMetricsService.initialize(mock(MetricsRegistry.class));
         arena = Arena.ofConfined();
@@ -44,10 +43,10 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         if (arena != null) {
             arena.close();
         }
-        super.tearDown();
     }
 
-    public void testConstructorWithValidSegment() {
+    @Test
+    public void ConstructorWithValidSegment() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -59,7 +58,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, refSegment.getGeneration());
     }
 
-    public void testConstructorWithNullSegmentThrows() {
+    @Test
+    public void ConstructorWithNullSegmentThrows() {
         try {
             new RefCountedMemorySegment(null, 1024, (s) -> {});
             fail("Expected IllegalArgumentException");
@@ -68,7 +68,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
     }
 
-    public void testConstructorWithNullReleaserThrows() {
+    @Test
+    public void ConstructorWithNullReleaserThrows() {
         MemorySegment segment = arena.allocate(1024);
         try {
             new RefCountedMemorySegment(segment, 1024, null);
@@ -78,7 +79,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
     }
 
-    public void testIncRefAndDecRef() {
+    @Test
+    public void IncRefAndDecRef() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -98,7 +100,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, releaseCount.get());
     }
 
-    public void testDecRefUnderflowThrows() {
+    @Test
+    public void DecRefUnderflowThrows() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -114,7 +117,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
     }
 
-    public void testIncRefOnReleasedSegmentThrows() {
+    @Test
+    public void IncRefOnReleasedSegmentThrows() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -130,7 +134,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
     }
 
-    public void testTryPinSuccess() {
+    @Test
+    public void TryPinSuccess() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -143,7 +148,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testTryPinFailsOnReleasedSegment() {
+    @Test
+    public void TryPinFailsOnReleasedSegment() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -155,7 +161,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, refSegment.getRefCount());
     }
 
-    public void testSegmentAccess() {
+    @Test
+    public void SegmentAccess() {
         MemorySegment segment = arena.allocate(1024);
         segment.set(ValueLayout.JAVA_INT, 0, 42);
 
@@ -167,7 +174,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(42, retrievedSegment.get(ValueLayout.JAVA_INT, 0));
     }
 
-    public void testSegmentSlicing() {
+    @Test
+    public void SegmentSlicing() {
         MemorySegment segment = arena.allocate(1024);
 
         RefCountedMemorySegment refSegment = new RefCountedMemorySegment(
@@ -180,7 +188,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(512, sliced.byteSize());
     }
 
-    public void testReset() {
+    @Test
+    public void Reset() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -196,7 +205,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testGenerationIncrementsOnClose() {
+    @Test
+    public void GenerationIncrementsOnClose() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -212,7 +222,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, releaseCount.get()); // Not fully released yet
     }
 
-    public void testGenerationDoesNotIncrementOnReset() {
+    @Test
+    public void GenerationDoesNotIncrementOnReset() {
         MemorySegment segment = arena.allocate(1024);
 
         RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, 1024, (s) -> {});
@@ -222,7 +233,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(initialGeneration, refSegment.getGeneration());
     }
 
-    public void testValue() {
+    @Test
+    public void Value() {
         MemorySegment segment = arena.allocate(1024);
 
         RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, 1024, (s) -> {});
@@ -230,7 +242,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(refSegment, refSegment.value());
     }
 
-    public void testConcurrentPinning() throws Exception {
+    @Test
+    public void ConcurrentPinning() throws Exception {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -267,7 +280,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount()); // Back to initial state
     }
 
-    public void testConcurrentIncRefDecRef() throws Exception {
+    @Test
+    public void ConcurrentIncRefDecRef() throws Exception {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -303,7 +317,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, releaseCount.get());
     }
 
-    public void testReleaserCalledExactlyOnce() {
+    @Test
+    public void ReleaserCalledExactlyOnce() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -331,7 +346,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, releaseCount.get()); // Called exactly once
     }
 
-    public void testCloseDecrementsRefCount() {
+    @Test
+    public void CloseDecrementsRefCount() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -345,7 +361,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, releaseCount.get());
     }
 
-    public void testLength() {
+    @Test
+    public void Length() {
         MemorySegment segment = arena.allocate(2048);
 
         RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, 1024, (s) -> {});
@@ -353,7 +370,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1024, refSegment.length());
     }
 
-    public void testTryPinIfGenerationSuccess() {
+    @Test
+    public void TryPinIfGenerationSuccess() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -367,7 +385,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testTryPinIfGenerationFailsOnMismatch() {
+    @Test
+    public void TryPinIfGenerationFailsOnMismatch() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -381,7 +400,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount()); // unchanged
     }
 
-    public void testTryPinIfGenerationFailsOnReleasedSegment() {
+    @Test
+    public void TryPinIfGenerationFailsOnReleasedSegment() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -394,7 +414,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, refSegment.getRefCount());
     }
 
-    public void testMultipleCloseThrows() {
+    @Test
+    public void MultipleCloseThrows() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -410,7 +431,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         }
     }
 
-    public void testGenerationBumpsAtomicallyWithRefCountInClose() {
+    @Test
+    public void GenerationBumpsAtomicallyWithRefCountInClose() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -425,7 +447,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testConcurrentCloseAndTryPin() throws Exception {
+    @Test
+    public void ConcurrentCloseAndTryPin() throws Exception {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -483,7 +506,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertTrue("At least one close should succeed", closeSuccessCount.get() >= 1);
     }
 
-    public void testPackedStateAtomicity() throws Exception {
+    @Test
+    public void PackedStateAtomicity() throws Exception {
         // Verify that we never observe torn reads of generation/refCount
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
@@ -543,7 +567,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(0, tornReadCount.get());
     }
 
-    public void testResetPreservesGeneration() {
+    @Test
+    public void ResetPreservesGeneration() {
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
 
@@ -564,7 +589,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount()); // refCount reset to 1
     }
 
-    public void testConcurrentResetIsNotThreadSafe() {
+    @Test
+    public void ConcurrentResetIsNotThreadSafe() {
         // Document that reset() is NOT thread-safe (should only be called under pool lock)
         // This test just verifies the documented behavior exists
         MemorySegment segment = arena.allocate(1024);
@@ -577,7 +603,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         // Calling reset() concurrently is undefined behavior (pool's responsibility to prevent)
     }
 
-    public void testPackStateAndUnpack() {
+    @Test
+    public void PackStateAndUnpack() {
         // Test the pack/unpack logic directly through observable behavior
         MemorySegment segment = arena.allocate(1024);
         RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, 1024, (s) -> {});
@@ -608,7 +635,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(2, refSegment.getRefCount());
     }
 
-    public void testPackStateWithLargeValues() {
+    @Test
+    public void PackStateWithLargeValues() {
         // Test with large generation and refCount values
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
@@ -629,7 +657,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(901, refSegment.getRefCount());
     }
 
-    public void testPackStateGenerationWraparound() {
+    @Test
+    public void PackStateGenerationWraparound() {
         // Verify generation wraps around correctly at 32-bit boundary
         // This is more of a documentation test since we can't easily reach 2^32
         MemorySegment segment = arena.allocate(1024);
@@ -646,7 +675,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testUnpackGenerationAndRefCountIndependently() {
+    @Test
+    public void UnpackGenerationAndRefCountIndependently() {
         // Verify gen and refCount are truly independent
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);
@@ -675,7 +705,8 @@ public class RefCountedMemorySegmentTests extends OpenSearchTestCase {
         assertEquals(1, refSegment.getRefCount());
     }
 
-    public void testPackedStatePreservesZeroValues() {
+    @Test
+    public void PackedStatePreservesZeroValues() {
         // Edge case: verify zero values are preserved correctly
         MemorySegment segment = arena.allocate(1024);
         AtomicInteger releaseCount = new AtomicInteger(0);

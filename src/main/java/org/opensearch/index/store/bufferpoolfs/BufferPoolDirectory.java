@@ -25,12 +25,11 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_loader.BlockLoader;
-import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
@@ -70,14 +69,23 @@ public class BufferPoolDirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final Pool<RefCountedMemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final Pool<RefCountedByteBuffer> memorySegmentPool;
+    private final BlockCache<RefCountedByteBuffer> blockCache;
     private final Worker readAheadworker;
     private final Provider provider;
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
-    private final FileChannelCache fileChannelCache;
+
+    /**
+     * Factory for creating L1 block caches. Default creates BlockSlotTinyCache.
+     */
+    @FunctionalInterface
+    public interface L1BlockCacheFactory {
+        L1BlockCache create(BlockCache<RefCountedByteBuffer> cache, Path path, long fileLength);
+    }
+
+    private final L1BlockCacheFactory l1Factory;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
@@ -97,12 +105,38 @@ public class BufferPoolDirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyResolver keyResolver,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
+        BlockLoader<RefCountedByteBuffer> blockLoader,
+        Worker worker,
+        EncryptionMetadataCache encryptionMetadataCache
+    )
+        throws IOException {
+        this(
+            path,
+            lockFactory,
+            provider,
+            keyResolver,
+            memorySegmentPool,
+            blockCache,
+            blockLoader,
+            worker,
+            encryptionMetadataCache,
+            BlockSlotTinyCache::new
+        );
+    }
+
+    public BufferPoolDirectory(
+        Path path,
+        LockFactory lockFactory,
+        Provider provider,
+        KeyResolver keyResolver,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
+        BlockLoader<RefCountedByteBuffer> blockLoader,
         Worker worker,
         EncryptionMetadataCache encryptionMetadataCache,
-        FileChannelCache fileChannelCache
+        L1BlockCacheFactory l1Factory
     )
         throws IOException {
         super(path, lockFactory);
@@ -113,7 +147,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
-        this.fileChannelCache = fileChannelCache;
+        this.l1Factory = l1Factory;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -135,7 +169,7 @@ public class BufferPoolDirectory extends FSDirectory {
 
             ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
             ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
-            BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
+            L1BlockCache l1Cache = l1Factory.create(blockCache, file, contentLength);
 
             return CachedMemorySegmentIndexInput
                 .newInstance(
@@ -145,7 +179,7 @@ public class BufferPoolDirectory extends FSDirectory {
                     blockCache,
                     readAheadManager,
                     readAheadContext,
-                    pinRegistry
+                    l1Cache
                 );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);
@@ -216,15 +250,6 @@ public class BufferPoolDirectory extends FSDirectory {
         if (blockCache != null) {
             blockCache.invalidateByPathPrefix(dirPath);
         }
-
-        // Invalidate all FD cache entries for files in this directory.
-        // Idle channels close immediately; in-flight channels close when I/O finishes.
-        if (fileChannelCache != null) {
-            fileChannelCache.invalidateByPathPrefix(dirPath);
-        }
-
-        // Mark directory as closed so ensureOpen() throws AlreadyClosedException
-        super.close();
     }
 
     @Override
@@ -253,11 +278,6 @@ public class BufferPoolDirectory extends FSDirectory {
         }
         super.deleteFile(name);
         encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
-
-        // Invalidate the FD cache entry for the deleted file
-        if (fileChannelCache != null) {
-            fileChannelCache.invalidate(file.toAbsolutePath().normalize().toString());
-        }
     }
 
     /**

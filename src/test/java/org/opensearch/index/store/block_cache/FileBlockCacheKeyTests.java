@@ -11,14 +11,23 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import org.opensearch.test.OpenSearchTestCase;
 
-public class FileBlockCacheKeyTests extends OpenSearchTestCase {
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import org.junit.Test;
+
+public class FileBlockCacheKeyTests {
 
     /**
      * Tests basic equality of two identical keys.
      */
-    public void testEqualityWithIdenticalKeys() {
+    @Test
+    public void EqualityWithIdenticalKeys() {
         Path path = Paths.get("/test/file.dat");
         long offset = 1024L;
 
@@ -32,7 +41,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests reflexive property: x.equals(x) should be true.
      */
-    public void testEqualityReflexive() {
+    @Test
+    public void EqualityReflexive() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
         assertEquals("Key should equal itself", key, key);
@@ -41,7 +51,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests symmetric property: if x.equals(y), then y.equals(x).
      */
-    public void testEqualitySymmetric() {
+    @Test
+    public void EqualitySymmetric() {
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         FileBlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
@@ -52,7 +63,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests transitive property: if x.equals(y) and y.equals(z), then x.equals(z).
      */
-    public void testEqualityTransitive() {
+    @Test
+    public void EqualityTransitive() {
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         FileBlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         FileBlockCacheKey key3 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
@@ -65,7 +77,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests consistency: multiple invocations of equals should return same result.
      */
-    public void testEqualityConsistent() {
+    @Test
+    public void EqualityConsistent() {
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         FileBlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
@@ -77,7 +90,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests null comparison: x.equals(null) should be false.
      */
-    public void testEqualityWithNull() {
+    @Test
+    public void EqualityWithNull() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
         assertFalse("Key should not equal null", key.equals(null));
@@ -86,7 +100,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests keys with different offsets are not equal.
      */
-    public void testInequalityDifferentOffsets() {
+    @Test
+    public void InequalityDifferentOffsets() {
         Path path = Paths.get("/test/file.dat");
         FileBlockCacheKey key1 = new FileBlockCacheKey(path, 1024L);
         FileBlockCacheKey key2 = new FileBlockCacheKey(path, 2048L);
@@ -98,7 +113,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests keys with different paths are not equal.
      */
-    public void testInequalityDifferentPaths() {
+    @Test
+    public void InequalityDifferentPaths() {
         long offset = 1024L;
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), offset);
         FileBlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), offset);
@@ -109,7 +125,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests hash code consistency: multiple invocations should return same value.
      */
-    public void testHashCodeConsistency() {
+    @Test
+    public void HashCodeConsistency() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
         int hash1 = key.hashCode();
@@ -123,7 +140,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests that hash code is cached (computed once).
      */
-    public void testHashCodeCaching() {
+    @Test
+    public void HashCodeCaching() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
         int hash1 = key.hashCode();
@@ -136,7 +154,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests that equal objects have equal hash codes.
      */
-    public void testEqualObjectsHaveEqualHashCodes() {
+    @Test
+    public void EqualObjectsHaveEqualHashCodes() {
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         FileBlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
 
@@ -146,7 +165,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests path normalization (relative paths become absolute).
      */
-    public void testPathNormalization() {
+    @Test
+    public void PathNormalization() {
         Path relativePath = Paths.get("test/file.dat");
         Path absolutePath = relativePath.toAbsolutePath().normalize();
 
@@ -159,7 +179,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests that paths with dots are normalized correctly.
      */
-    public void testPathNormalizationWithDots() {
+    @Test
+    public void PathNormalizationWithDots() {
         Path path1 = Paths.get("/test/./file.dat");
         Path path2 = Paths.get("/test/file.dat");
 
@@ -172,7 +193,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests that paths with .. are normalized correctly.
      */
-    public void testPathNormalizationWithParentRef() {
+    @Test
+    public void PathNormalizationWithParentRef() {
         Path path1 = Paths.get("/test/subdir/../file.dat");
         Path path2 = Paths.get("/test/file.dat");
 
@@ -185,7 +207,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests zero offset.
      */
-    public void testZeroOffset() {
+    @Test
+    public void ZeroOffset() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         assertEquals("Offset should be 0", 0L, key.offset());
@@ -196,7 +219,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests very large offset.
      */
-    public void testLargeOffset() {
+    @Test
+    public void LargeOffset() {
         long largeOffset = Long.MAX_VALUE - 1;
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), largeOffset);
 
@@ -207,7 +231,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests negative offset (valid in cache key context).
      */
-    public void testNegativeOffset() {
+    @Test
+    public void NegativeOffset() {
         long negativeOffset = -1024L;
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), negativeOffset);
 
@@ -217,7 +242,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests filePath() accessor returns normalized absolute path.
      */
-    public void testFilePathAccessor() {
+    @Test
+    public void FilePathAccessor() {
         Path originalPath = Paths.get("relative/file.dat");
         FileBlockCacheKey key = new FileBlockCacheKey(originalPath, 1024L);
 
@@ -230,7 +256,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests offset() and fileOffset() accessors return same value.
      */
-    public void testOffsetAccessors() {
+    @Test
+    public void OffsetAccessors() {
         long offset = 4096L;
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), offset);
 
@@ -242,7 +269,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests toString() contains path and offset information.
      */
-    public void testToString() {
+    @Test
+    public void ToString() {
         Path path = Paths.get("/test/file.dat");
         long offset = 1024L;
         FileBlockCacheKey key = new FileBlockCacheKey(path, offset);
@@ -257,7 +285,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests use as HashMap key.
      */
-    public void testUseAsHashMapKey() {
+    @Test
+    public void UseAsHashMapKey() {
         Map<FileBlockCacheKey, String> map = new HashMap<>();
 
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
@@ -281,7 +310,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests use in HashSet.
      */
-    public void testUseInHashSet() {
+    @Test
+    public void UseInHashSet() {
         Set<FileBlockCacheKey> set = new HashSet<>();
 
         FileBlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
@@ -297,7 +327,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests hash distribution for collision resistance.
      */
-    public void testHashDistribution() {
+    @Test
+    public void HashDistribution() {
         Set<Integer> hashCodes = new HashSet<>();
 
         // Generate many keys with different offsets
@@ -314,7 +345,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests different file names in same directory produce different keys.
      */
-    public void testDifferentFilesInSameDirectory() {
+    @Test
+    public void DifferentFilesInSameDirectory() {
         Path file1 = Paths.get("/test/index/_1.cfs");
         Path file2 = Paths.get("/test/index/_2.cfs");
         Path file3 = Paths.get("/test/index/_3.cfs");
@@ -331,7 +363,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests same file name in different directories produce different keys.
      */
-    public void testSameFileNameDifferentDirectories() {
+    @Test
+    public void SameFileNameDifferentDirectories() {
         Path file1 = Paths.get("/test/index1/_6.cfs");
         Path file2 = Paths.get("/test/index2/_6.cfs");
         Path file3 = Paths.get("/test/index3/_6.cfs");
@@ -348,7 +381,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests sequential offsets for same file produce different keys.
      */
-    public void testSequentialOffsets() {
+    @Test
+    public void SequentialOffsets() {
         Path path = Paths.get("/test/file.dat");
         int blockSize = 8192;
 
@@ -364,7 +398,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests comparison with different object type returns false.
      */
-    public void testEqualityWithDifferentType() {
+    @Test
+    public void EqualityWithDifferentType() {
         FileBlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 1024L);
         String otherType = "not a key";
 
@@ -374,7 +409,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests that path with trailing slashes is handled correctly.
      */
-    public void testPathWithTrailingSlash() {
+    @Test
+    public void PathWithTrailingSlash() {
         // Note: Paths.get handles trailing slashes automatically
         Path path1 = Paths.get("/test/dir/");
         Path path2 = Paths.get("/test/dir");
@@ -391,7 +427,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests multiple sequential blocks from same file.
      */
-    public void testMultipleBlocksFromSameFile() {
+    @Test
+    public void MultipleBlocksFromSameFile() {
         Path path = Paths.get("/data/index/segment.cfs");
         int blockSize = 8192;
         Map<FileBlockCacheKey, Integer> blockMap = new HashMap<>();
@@ -413,7 +450,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests hash code sentinel value handling (when hash computes to 0).
      */
-    public void testHashCodeSentinelHandling() {
+    @Test
+    public void HashCodeSentinelHandling() {
         // Try to find a path/offset combination that might hash to 0
         // This is probabilistic, but tests the sentinel logic
         for (int i = 0; i < 1000; i++) {
@@ -428,7 +466,8 @@ public class FileBlockCacheKeyTests extends OpenSearchTestCase {
     /**
      * Tests BlockCacheKey interface methods.
      */
-    public void testBlockCacheKeyInterface() {
+    @Test
+    public void BlockCacheKeyInterface() {
         Path path = Paths.get("/test/file.dat");
         long offset = 4096L;
 

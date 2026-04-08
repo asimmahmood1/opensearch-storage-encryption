@@ -4,25 +4,16 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
-import java.nio.file.Path;
-
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.PanamaNativeAccess;
 
 /**
  * Static configuration constants for the encrypted storage buffer pool and Direct I/O operations.
  *
- * <p>These configurations are intentionally static and immutable, not dynamic settings.
- * They are determined at JVM startup based on system properties and cannot be changed
- * at runtime. This design ensures:
- * <ul>
- *   <li>Consistent behavior across all indices using encrypted storage</li>
- *   <li>Memory allocations and buffer sizes remain stable throughout the JVM lifecycle</li>
- *   <li>Direct I/O alignment requirements are satisfied based on system page size</li>
- *   <li>No runtime overhead from dynamic configuration lookups</li>
- * </ul>
- *
- * <p>If you need to change these values, they must be set via JVM properties or code changes,
- * and require a node restart to take effect.
+ * <p>Cache block size is configurable via {@code juno.storage_encryption.block_size} DynamicConfig
+ * (defined in JunoSettings). Call {@link #init(Integer)} from createComponents to apply the configured value.
+ * If not explicitly set, defaults to 1MB.
  */
 public class StaticConfigs {
 
@@ -31,13 +22,17 @@ public class StaticConfigs {
         throw new AssertionError("Utility class - do not instantiate");
     }
 
+    private static final Logger LOGGER = LogManager.getLogger(StaticConfigs.class);
+
+    public static final int MIN_CACHE_BLOCK_SIZE = 512;
+
+    private static final int DEFAULT_CACHE_BLOCK_SIZE_POWER = 20; // 1MB default
+
     /** 
-     * Default alignment for Direct I/O operations in bytes.
-     * This is a safe fallback (512 bytes) used when the filesystem block size
-     * cannot be determined. Callers that have a path available should prefer
-     * {@link #getDirectIOAlignment(Path)} for the actual filesystem block size.
+     * Alignment requirement for Direct I/O operations in bytes.
+     * Must be at least 512 bytes or the system page size, whichever is larger.
      */
-    public static final int DIRECT_IO_ALIGNMENT = 512;
+    public static final int DIRECT_IO_ALIGNMENT = Math.max(512, getPageSizeSafe());
 
     /** 
      * Power of 2 for Direct I/O write buffer size (2^18 = 256KB).
@@ -45,44 +40,65 @@ public class StaticConfigs {
     public static final int DIRECT_IO_WRITE_BUFFER_SIZE_POWER = 18;
 
     /** 
-     * Power of 2 for cache block size (2^13 = 8KB blocks).
+     * Power of 2 for cache block size. Computed from CACHE_BLOCK_SIZE.
      */
-    public static final int CACHE_BLOCK_SIZE_POWER = 13;
+    public static volatile int CACHE_BLOCK_SIZE_POWER = DEFAULT_CACHE_BLOCK_SIZE_POWER;
 
     /** 
-     * Size of each cache block in bytes (8KB).
+     * Size of each cache block in bytes.
      */
-    public static final int CACHE_BLOCK_SIZE = 1 << CACHE_BLOCK_SIZE_POWER;
+    public static volatile int CACHE_BLOCK_SIZE = 1 << DEFAULT_CACHE_BLOCK_SIZE_POWER;
 
     /**
      * Bit mask for cache block alignment (block_size - 1).
      */
-    public static final long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
+    public static volatile long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
+
+    private static final int DEFAULT_BLOCK_SIZE = 1 << DEFAULT_CACHE_BLOCK_SIZE_POWER; // 1MB
+
+    private static volatile boolean initialized = false;
 
     /**
-     * Default maximum number of cached FileChannels in the node-level FileChannelCache.
-     */
-    public static final int DEFAULT_MAX_FILE_CHANNELS = 256;
-
-    /**
-     * Default expiry time in seconds for idle FileChannels in the FileChannelCache.
-     * Channels not accessed within this duration are evicted. 300s (5 min) balances
-     * FD reuse for active shards with timely cleanup for idle ones.
-     */
-    public static final long DEFAULT_FD_CACHE_EXPIRE_AFTER_ACCESS_SECONDS = 300;
-
-    /**
-     * Returns the correct Direct I/O alignment for the filesystem containing the given path.
+     * Initializes block size from the resolved DynamicConfig value.
+     * Must be called exactly once from {@code CryptoDirectoryPlugin.createComponents}.
+     * Falls back to 1MB default if dynamicConfigValue is null.
      *
-     * <p>Direct I/O requires buffers and offsets to be aligned to the filesystem's logical
-     * block size, not the kernel's virtual memory page size. Using the page size (e.g., 4096
-     * or 64KB on ARM) instead of the filesystem block size (typically 512 or 4096) can waste
-     * memory and cause incorrect alignment on systems with non-standard page sizes.
-     *
-     * @param path a path on the target filesystem
-     * @return the filesystem block size in bytes (guaranteed to be a power of 2)
+     * @throws IllegalStateException if called more than once
      */
-    public static int getDirectIOAlignment(Path path) {
-        return Math.max(DIRECT_IO_ALIGNMENT, PanamaNativeAccess.getFileSystemBlockSize(path));
+    public static void init(Integer dynamicConfigValue) {
+        if (initialized) {
+            throw new IllegalStateException("StaticConfigs.init() has already been called; block size cannot be re-initialized");
+        }
+        initialized = true;
+        int blockSize;
+        if (dynamicConfigValue != null) {
+            blockSize = dynamicConfigValue;
+            LOGGER.info("Storage encryption block size: source=DynamicConfig, value={}", blockSize);
+        } else {
+            blockSize = DEFAULT_BLOCK_SIZE;
+            LOGGER.info("Storage encryption block size: source=local default, value={}", blockSize);
+        }
+        if (Integer.bitCount(blockSize) != 1) {
+            throw new IllegalArgumentException("juno.storage_encryption.block_size must be a power of 2, got: " + blockSize);
+        }
+        CACHE_BLOCK_SIZE = blockSize;
+        CACHE_BLOCK_SIZE_POWER = Integer.numberOfTrailingZeros(blockSize);
+        CACHE_BLOCK_MASK = blockSize - 1L;
+        LOGGER.info("Storage encryption block size set to {} bytes (2^{})", CACHE_BLOCK_SIZE, CACHE_BLOCK_SIZE_POWER);
+    }
+
+    /** For testing only — resets initialization state so {@link #init(Integer)} can be called again. */
+    public static void resetForTesting() {
+        initialized = false;
+    }
+
+    private static int getPageSizeSafe() {
+        try {
+            return PanamaNativeAccess.getPageSize();
+        } catch (Throwable e) {
+            // Native access not available (class initialization failed, native library not found, etc.)
+            // Fall back to common page size
+            return 4096;
+        }
     }
 }

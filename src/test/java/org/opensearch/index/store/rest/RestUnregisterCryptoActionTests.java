@@ -5,15 +5,16 @@
 package org.opensearch.index.store.rest;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.opensearch.rest.RestRequest.Method.POST;
 
 import org.junit.Before;
+import org.junit.Test;
 import org.opensearch.rest.RestRequest;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.node.NodeClient;
 
-public class RestUnregisterCryptoActionTests extends OpenSearchTestCase {
+public class RestUnregisterCryptoActionTests {
 
     private RestUnregisterCryptoAction action;
     private RestRequest request;
@@ -21,23 +22,25 @@ public class RestUnregisterCryptoActionTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         action = new RestUnregisterCryptoAction();
         request = mock(RestRequest.class);
         client = mock(NodeClient.class);
     }
 
-    public void testGetName() {
+    @Test
+    public void GetName() {
         assertEquals("unregister_key_action", action.getName());
     }
 
-    public void testRoutes() {
+    @Test
+    public void Routes() {
         assertEquals(1, action.routes().size());
         assertEquals(POST, action.routes().get(0).getMethod());
         assertEquals("/_plugins/_opensearch_storage_encryption/_unregister_key", action.routes().get(0).getPath());
     }
 
-    public void testPrepareRequestThrowsUnsupportedOperationException() {
-        expectThrows(UnsupportedOperationException.class, () -> action.prepareRequest(request, client));
+    @Test
+    public void PrepareRequestThrowsUnsupportedOperationException() {
+        assertThrows(UnsupportedOperationException.class, () -> action.prepareRequest(request, client));
     }
 }

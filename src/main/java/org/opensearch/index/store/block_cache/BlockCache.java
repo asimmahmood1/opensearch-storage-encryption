@@ -6,7 +6,6 @@ package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Map;
 
 /**
  * Generic block cache interface for storing and retrieving blocks of data.
@@ -82,16 +81,35 @@ public interface BlockCache<T> {
     void clear();
 
     /**
-     * Load multiple blocks for prefetch/readahead with a short timeout to fail fast when pool is under pressure.
+     * Clear all blocks from the cache that are not currently in use (refCount == 1).
+     * This is a safer alternative to clear() that avoids clearing blocks that are actively being used.
+     */
+    void clearSafely();
+
+    /**
+     * Load multiple blocks for prefetch with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     * Checks cache first and only loads missing blocks, combining consecutive ranges into single bulk loads.
      *
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return map of cache keys to cache values for blocks that were successfully loaded into the cache
      * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
-    Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException;
+    void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+
+    /**
+     * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.
+     * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     * Note: does not check cache first, single IO call
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @return count of blocks that were successfully loaded into the cache
+     * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
+     */
+    long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
      * Returns cache statistics as a formatted string.
@@ -118,6 +136,13 @@ public interface BlockCache<T> {
      * @return number of entries in the cache
      */
     long getCacheSize();
+
+    /**
+     * Returns the maximum size (capacity) of the cache.
+     *
+     * @return maximum number of entries the cache can hold, or 0 if unbounded
+     */
+    long getMaxSize();
 
     /**
      * Returns the cumulative count of cache hits.

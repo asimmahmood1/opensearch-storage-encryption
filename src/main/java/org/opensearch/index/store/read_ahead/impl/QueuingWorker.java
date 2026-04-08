@@ -306,7 +306,10 @@ public final class QueuingWorker implements Worker {
                     );
             }
 
-            task.blockCache.loadForPrefetch(task.path, task.offset, task.blockCount);
+            long loaded = task.blockCache.loadAllBlocks(task.path, task.offset, task.blockCount);
+            // Successfully loaded via read-ahead - track it
+            org.opensearch.index.store.hll.WorkingSetEstimator.getInstance().recordReadAheadLoad(loaded);
+
 
             task.doneNanos = System.nanoTime();
             inFlight.remove(task);

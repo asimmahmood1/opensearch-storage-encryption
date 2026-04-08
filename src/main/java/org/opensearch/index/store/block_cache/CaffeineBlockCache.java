@@ -11,6 +11,9 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentMap;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -39,17 +42,27 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private final Cache<BlockCacheKey, BlockCacheValue<T>> cache;
     private final BlockLoader<V> blockLoader;
+    private final long maxBlocks;
+    private final PrefetchTracker prefetchTracker;
 
     /**
-     * Constructs a new CaffeineBlockCache with the specified cache and block loader.
+     * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch tracker.
      *
      * @param cache the underlying Caffeine cache instance
      * @param blockLoader the loader used to load blocks when cache misses occur
      * @param maxBlocks the maximum number of blocks to cache (currently unused but kept for API compatibility)
+     * @param prefetchTracker tracker for prefetch deduplication, stats, and async execution
      */
-    public CaffeineBlockCache(Cache<BlockCacheKey, BlockCacheValue<T>> cache, BlockLoader<V> blockLoader, long maxBlocks) {
-        this.blockLoader = blockLoader;
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        PrefetchTracker prefetchTracker
+    ) {
         this.cache = cache;
+        this.blockLoader = blockLoader;
+	this.maxBlocks = maxBlocks;
+        this.prefetchTracker = prefetchTracker;
     }
 
     @Override
@@ -168,9 +181,26 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         cache.invalidateAll();
     }
 
+    @Override
+    public void clearSafely() {
+        long initialSize = cache.estimatedSize();
+        ConcurrentMap<BlockCacheKey, BlockCacheValue<T>> map =
+                cache.asMap();
+        Set<BlockCacheKey> keys = new HashSet<>();
+        map.forEach((k, v) -> {
+            keys.add(k);
+        });
+        for (BlockCacheKey key : keys) {
+            cache.invalidate(key);
+        }
+        long newSize = initialSize - cache.estimatedSize();
+        LOGGER.info("Total values removed from buffer cache: {} expected to be removed {}", newSize,
+                keys.size());
+    }
+
     /**
      * Bulk load multiple blocks efficiently using a single I/O operation.
-     * Similar to getOrLoad() but for a contiguous range of blocks.
+     * Checks cache first and only loads missing blocks, combining consecutive ranges.
      * 
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
@@ -178,8 +208,79 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * @throws IOException if loading fails (including specific BlockLoader exceptions)
      */
     @Override
-    public Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException {
-        Map<BlockCacheKey, BlockCacheValue<T>> loaded = new LinkedHashMap<>();
+    public void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        prefetchTracker.recordPrefetchCall(blockCount);
+        long t0 = System.nanoTime();
+        try {
+            prefetchTracker.execute(() -> {
+                try {
+                    loadMissingBlocksSync(filePath, startOffset, blockCount);
+                } catch (Exception e) {
+                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
+                }
+            });
+        } catch (Exception e) {
+            LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
+        } finally {
+            prefetchTracker.recordPrefetchTimeNs(System.nanoTime() - t0);
+        }
+    }
+
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) {
+        BlockCacheKey[] keys = new BlockCacheKey[(int) blockCount];
+        int keyCount = 0;
+        for (int i = 0; i < blockCount; i++) {
+            long blockOffset = startOffset + i * CACHE_BLOCK_SIZE;
+            BlockCacheKey key = createBlockKey(filePath, blockOffset);
+            if (prefetchTracker.putIfAbsent(key)) {
+                keys[keyCount++] = key;
+            }
+        }
+
+        long[] loaded = { 0 };
+        long failed = 0;
+        for (int i = 0; i < keyCount; i++) {
+            BlockCacheKey key = keys[i];
+            try {
+                cache.get(key, k -> {
+                    try {
+                        V[] result = blockLoader.load(k.filePath(), k.offset(), 1, 50);
+                        @SuppressWarnings("unchecked")
+                        BlockCacheValue<T> value = (BlockCacheValue<T>) result[0];
+                        loaded[0]++;
+                        return value;
+                    } catch (Exception e) {
+                        return handleLoadException(k, e);
+                    }
+                });
+            } catch (Exception e) {
+                LOGGER.warn("Prefetch load failed: path={} offset={}", filePath, key.offset(), e);
+                failed++;
+            } finally {
+                prefetchTracker.remove(key);
+            }
+        }
+        if (loaded[0] > 0) {
+            prefetchTracker.recordBlocksLoaded(loaded[0]);
+        }
+        long cacheHits = keyCount - loaded[0] - failed;
+        if (cacheHits > 0) {
+            prefetchTracker.recordCacheHits(cacheHits);
+        }
+    }
+
+    /**
+     * Bulk load multiple blocks efficiently using a single I/O operation.
+     * Similar to getOrLoad() but for a contiguous range of blocks.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @throws IOException if loading fails (including specific BlockLoader exceptions)
+     */
+    @Override
+    public long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException {
+        long loadedCount = 0;
 
         V[] loadedBlocks;
 
@@ -196,9 +297,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 // Direct cast - BlockLoader contract guarantees V is BlockCacheValue<T>
                 @SuppressWarnings("unchecked")
                 BlockCacheValue<T> wrapped = (BlockCacheValue<T>) block;
-                loaded.put(key, wrapped);
 
-                if (cache.asMap().putIfAbsent(key, wrapped) != null) {
+                if (cache.asMap().putIfAbsent(key, wrapped) == null) {
+                    // Successfully inserted into cache
+                    loadedCount++;
+                } else {
                     // already cached → release our newly loaded segment as we won't use it
                     // we use decRef() not close() - this segment was never inserted into cache,
                     // so we shouldn't increment generation.
@@ -215,8 +318,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 throw new IOException("Failed bulk load: " + filePath, re);
             }
         }
-
-        return loaded;
+        return loadedCount;
     }
 
     // Helper method to create appropriate cache key for file blocks
@@ -239,10 +341,14 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @Override
     public String cacheStats() {
         var stats = cache.stats();
+        long currentSize = cache.estimatedSize();
+        double utilization = maxBlocks > 0 ? (currentSize * 100.0 / maxBlocks) : 0.0;
         return String
             .format(
-                "Cache[size=%d, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, evictionCount=%d, avgLoadTime=%.2fms]",
-                cache.estimatedSize(),
+                "Cache[size=%d, maxSize=%d, utilization=%.2f%%, hits=%d, misses=%d, hitRate=%.2f%%, loads=%d, evictionCount=%d, avgLoadTime=%.2fms]",
+                currentSize,
+                maxBlocks,
+                utilization,
                 stats.hitCount(),
                 stats.missCount(),
                 stats.hitRate() * 100,
@@ -266,6 +372,12 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @Override
     public void recordStats() {
         var stats = cache.stats();
+        LOGGER.debug("CacheMetrics[size={}, maxSize={}, hits={}, misses={}, hitRate={}%, loads={}, evictions={}, avgLoadMs={}]",
+            cache.estimatedSize(), cache.policy().eviction().map(e -> e.getMaximum()).orElse(-1L),
+            stats.hitCount(), stats.missCount(),
+            String.format("%.2f", stats.hitRate() * 100),
+            stats.loadCount(), stats.evictionCount(),
+            String.format("%.2f", stats.averageLoadPenalty() / 1_000_000.0));
         CryptoMetricsService
             .getInstance()
             .recordCacheStats(
@@ -277,6 +389,16 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 stats.evictionCount(),
                 stats.averageLoadPenalty() / 1_000_000.0  // Convert to ms
             );
+        CryptoMetricsService
+            .getInstance()
+            .recordPrefetchStats(
+                prefetchTracker.getCalls(),
+                prefetchTracker.getBlocksRequested(),
+                prefetchTracker.getBlocksLoaded(),
+                prefetchTracker.getBlocksDeduped(),
+                prefetchTracker.getBlocksCacheHit(),
+                prefetchTracker.size()
+            );
     }
 
     @Override
@@ -287,6 +409,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @Override
     public long getCacheSize() {
         return cache.estimatedSize();
+    }
+
+    @Override
+    public long getMaxSize() {
+        return maxBlocks;
     }
 
     @Override

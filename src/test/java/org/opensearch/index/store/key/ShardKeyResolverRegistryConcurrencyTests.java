@@ -15,6 +15,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.nio.file.Files;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Provider;
 import java.security.Security;
@@ -31,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
 import org.opensearch.cluster.service.ClusterService;
@@ -40,12 +42,9 @@ import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
-
-import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 
 /**
  * Tests for concurrent shard creation to verify the race condition fix
@@ -54,8 +53,7 @@ import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
  * This test ensures that when multiple shards of the same index are created
  * concurrently, only one thread initializes the shared index-level keyfile.
  */
-@ThreadLeakFilters(filters = org.opensearch.index.store.CaffeineThreadLeakFilter.class)
-public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase {
+public class ShardKeyResolverRegistryConcurrencyTests {
 
     private Path tempDir;
     private MasterKeyProvider mockKeyProvider;
@@ -63,9 +61,9 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+
         // Create temporary directory for test
-        tempDir = createTempDir();
+        tempDir = Files.createTempDirectory("test-tmp");
 
         // Set up mock key provider
         mockKeyProvider = mock(MasterKeyProvider.class);
@@ -112,14 +110,14 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
         ShardKeyResolverRegistry.clearCache();
         MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
-        super.tearDown();
     }
 
     /**
      * Test that concurrent creation of multiple shards from the same index
      * results in only ONE keyfile generation (proves no race condition).
      */
-    public void testConcurrentShardCreationSingleKeyGeneration() throws Exception {
+    @Test
+    public void ConcurrentShardCreationSingleKeyGeneration() throws Exception {
         String indexUuid = "test-index-uuid";
         String indexName = "test-index";
         int numShards = 10;
@@ -177,7 +175,8 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
     /**
      * Test that resolver cleanup properly removes index locks when the last shard is removed.
      */
-    public void testIndexLockCleanupOnResolverRemoval() throws Exception {
+    @Test
+    public void IndexLockCleanupOnResolverRemoval() throws Exception {
         String indexUuid = "test-index-cleanup";
         String indexName = "test-index-cleanup";
         int numShards = 5;
@@ -214,7 +213,8 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
      * Stress test: Rapid creation and deletion cycles to verify no memory leaks
      * and consistent behavior under stress.
      */
-    public void testStressRaceCondition() throws Exception {
+    @Test
+    public void StressRaceCondition() throws Exception {
         int numIterations = 50;
         int numShards = 5;
 
@@ -222,7 +222,7 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
             String indexUuid = "stress-test-" + i;
             String indexName = "stress-index-" + i;
 
-            Path indexDir = createTempDir();
+            Path indexDir = Files.createTempDirectory("test-tmp");
             Directory indexDirectory = FSDirectory.open(indexDir);
 
             // Reset mock for each iteration
@@ -277,7 +277,8 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
      * Test that different indices can be created concurrently without interfering
      * with each other.
      */
-    public void testConcurrentDifferentIndicesCreation() throws Exception {
+    @Test
+    public void ConcurrentDifferentIndicesCreation() throws Exception {
         int numIndices = 5;
         int shardsPerIndex = 3;
 
@@ -289,7 +290,7 @@ public class ShardKeyResolverRegistryConcurrencyTests extends OpenSearchTestCase
         for (int indexNum = 0; indexNum < numIndices; indexNum++) {
             String indexUuid = "index-" + indexNum;
             String indexName = "index-name-" + indexNum;
-            Path indexDir = createTempDir();
+            Path indexDir = Files.createTempDirectory("test-tmp");
             Directory indexDirectory = FSDirectory.open(indexDir);
 
             for (int shardId = 0; shardId < shardsPerIndex; shardId++) {

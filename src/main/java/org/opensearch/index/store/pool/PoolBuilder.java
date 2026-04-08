@@ -10,19 +10,23 @@ import java.io.Closeable;
 import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
+import org.opensearch.index.store.CryptoDirectoryPlugin;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheBuilder;
-import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
-import org.opensearch.index.store.block_loader.FileChannelCache;
+import org.opensearch.index.store.block_cache.PrefetchTracker;
+import org.opensearch.index.store.hll.WorkingSetEstimator;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.index.store.read_ahead.impl.ReadAheadSizingPolicy;
+import org.opensearch.threadpool.ThreadPool;
 
 /**
  * Builder for creating shared pool and cache resources with proper lifecycle management.
@@ -47,26 +51,28 @@ public final class PoolBuilder {
      * providing proper cleanup when closed.
      */
     public static class PoolResources implements Closeable {
-        private final Pool<RefCountedMemorySegment> segmentPool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
+        private final Pool<RefCountedByteBuffer> segmentPool;
+        private final BlockCache<RefCountedByteBuffer> blockCache;
         private final long maxCacheBlocks;
         private final int readAheadQueueSize;
         private final Worker sharedReadaheadWorker;
         private final TelemetryThread telemetry;
         private final java.util.concurrent.ThreadPoolExecutor removalExecutor;
         private final ExecutorService readAheadExecutor;
-        private final FileChannelCache fileChannelCache;
+        private final PrefetchTracker prefetchTracker;
+        private final ExecutorService prefetchExecutor;
 
         PoolResources(
-            Pool<RefCountedMemorySegment> segmentPool,
-            BlockCache<RefCountedMemorySegment> blockCache,
+            Pool<RefCountedByteBuffer> segmentPool,
+            BlockCache<RefCountedByteBuffer> blockCache,
             long maxCacheBlocks,
             int readAheadQueueSize,
             Worker sharedReadaheadWorker,
             TelemetryThread telemetry,
             java.util.concurrent.ThreadPoolExecutor removalExecutor,
             ExecutorService readAheadExecutor,
-            FileChannelCache fileChannelCache
+            PrefetchTracker prefetchTracker,
+            ExecutorService prefetchExecutor
         ) {
             this.segmentPool = segmentPool;
             this.blockCache = blockCache;
@@ -76,7 +82,8 @@ public final class PoolBuilder {
             this.telemetry = telemetry;
             this.removalExecutor = removalExecutor;
             this.readAheadExecutor = readAheadExecutor;
-            this.fileChannelCache = fileChannelCache;
+            this.prefetchTracker = prefetchTracker;
+            this.prefetchExecutor = prefetchExecutor;
         }
 
         /**
@@ -84,7 +91,7 @@ public final class PoolBuilder {
          *
          * @return the segment pool
          */
-        public Pool<RefCountedMemorySegment> getSegmentPool() {
+        public Pool<RefCountedByteBuffer> getSegmentPool() {
             return segmentPool;
         }
 
@@ -93,7 +100,7 @@ public final class PoolBuilder {
          *
          * @return the block cache
          */
-        public BlockCache<RefCountedMemorySegment> getBlockCache() {
+        public BlockCache<RefCountedByteBuffer> getBlockCache() {
             return blockCache;
         }
 
@@ -136,13 +143,12 @@ public final class PoolBuilder {
         }
 
         /**
-         * Returns the shared FileChannel cache.
-         * Node-level cache of FileChannels bounded by max open FDs.
+         * Returns the shared prefetch tracker for deduplication and stats.
          *
-         * @return the file channel cache
+         * @return the prefetch tracker
          */
-        public FileChannelCache getFileChannelCache() {
-            return fileChannelCache;
+        public PrefetchTracker getPrefetchTracker() {
+            return prefetchTracker;
         }
 
         /**
@@ -150,11 +156,15 @@ public final class PoolBuilder {
          */
         @Override
         public void close() {
-            if (fileChannelCache != null) {
-                fileChannelCache.close();
-            }
             if (telemetry != null) {
                 telemetry.close();
+            }
+            if (segmentPool instanceof AutoCloseable) {
+                try {
+                    ((AutoCloseable) segmentPool).close();
+                } catch (Exception e) {
+                    LOGGER.warn("Error closing pool", e);
+                }
             }
             if (sharedReadaheadWorker != null) {
                 try {
@@ -185,6 +195,17 @@ public final class PoolBuilder {
                     readAheadExecutor.shutdownNow();
                 }
             }
+            if (prefetchExecutor != null) {
+                prefetchExecutor.shutdown();
+                try {
+                    if (!prefetchExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                        prefetchExecutor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    prefetchExecutor.shutdownNow();
+                }
+            }
         }
     }
 
@@ -193,18 +214,12 @@ public final class PoolBuilder {
      */
     private static class TelemetryThread implements Closeable {
         private final Thread thread;
-        private final Pool<RefCountedMemorySegment> pool;
-        private final BlockCache<RefCountedMemorySegment> blockCache;
-        private final FileChannelCache fileChannelCache;
+        private final Pool<RefCountedByteBuffer> pool;
+        private final BlockCache<RefCountedByteBuffer> blockCache;
 
-        TelemetryThread(
-            Pool<RefCountedMemorySegment> pool,
-            BlockCache<RefCountedMemorySegment> blockCache,
-            FileChannelCache fileChannelCache
-        ) {
+        TelemetryThread(Pool<RefCountedByteBuffer> pool, BlockCache<RefCountedByteBuffer> blockCache) {
             this.pool = pool;
             this.blockCache = blockCache;
-            this.fileChannelCache = fileChannelCache;
             this.thread = new Thread(this::run);
             this.thread.setDaemon(true);
             this.thread.setName("DirectIOBufferPoolStatsLogger");
@@ -229,9 +244,7 @@ public final class PoolBuilder {
             try {
                 pool.recordStats();
                 blockCache.recordStats();
-                if (fileChannelCache != null) {
-                    fileChannelCache.recordStats();
-                }
+
             } catch (Exception e) {
                 LOGGER.warn("Failed to log cache/pool stats", e);
             }
@@ -251,10 +264,11 @@ public final class PoolBuilder {
     /**
      * Initialized the MemorySegmentPool and BlockCache.
      *
-     * @param settings the node settings for configuration
+     * @param settings   the node settings for configuration
+     * @param threadPool
      * @return SharedPoolResources containing the initialized pool and cache
      */
-    public static PoolResources build(Settings settings) {
+    public static PoolResources build(Settings settings, ThreadPool threadPool) {
         long reservedPoolSizeInBytes = PoolSizeCalculator.calculatePoolSize(settings);
 
         reservedPoolSizeInBytes = (reservedPoolSizeInBytes / CACHE_BLOCK_SIZE) * CACHE_BLOCK_SIZE;
@@ -271,7 +285,7 @@ public final class PoolBuilder {
         double cacheToPoolRatio = PoolSizeCalculator.calculateCacheToPoolRatio(offHeap, settings);
         double warmupPercentage = PoolSizeCalculator.calculateWarmupPercentage(offHeap, settings);
 
-        Pool<RefCountedMemorySegment> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
+        Pool<RefCountedByteBuffer> segmentPool = new MemorySegmentPool(reservedPoolSizeInBytes, CACHE_BLOCK_SIZE);
         LOGGER
             .info(
                 "Creating shared pool with sizeBytes={}, segmentSize={}, totalSegments={}",
@@ -291,17 +305,44 @@ public final class PoolBuilder {
         int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
+        int prefetchThreads = com.amazonaws.juno.settings.JunoSettings.STORAGE_PREFETCH_THREAD_COUNT_SETTING.get();
+        if (prefetchThreads == -1) {
+            // his accounts for approx processors x 1.5 search threads and processors x 2 index_searcher threads
+            prefetchThreads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
+        }
+        int prefetchQueueSize = com.amazonaws.juno.settings.JunoSettings.STORAGE_PREFETCH_QUEUE_SIZE_SETTING.get();
+        if (prefetchQueueSize == -1) {
+            prefetchQueueSize = prefetchThreads * 1000;
+        }
+        LOGGER.info("Prefetch ForkJoinPool: threads={}, maxInflight={}, allocatedProcessors={}", prefetchThreads, prefetchQueueSize, OpenSearchExecutors.allocatedProcessors(settings));
+        ForkJoinPool.ForkJoinWorkerThreadFactory factory = pool -> {
+            java.util.concurrent.ForkJoinWorkerThread t = ForkJoinPool.defaultForkJoinWorkerThreadFactory.newThread(pool);
+            t.setName("prefetch-worker-" + t.getPoolIndex());
+            t.setDaemon(true);
+            return t;
+        };
+        // ForkJoin is much faster queue based executors: https://github.com/opensearch-project/opensearch-storage-encryption/pull/149#issuecomment-4151066212
+        ExecutorService prefetchExecutor = new ForkJoinPool(prefetchThreads, factory, null, false);
+        PrefetchTracker prefetchTracker = new PrefetchTracker(prefetchExecutor, prefetchQueueSize);
+
         // Initialize shared cache with removal listener and get its executor
-        BlockCacheBuilder.CacheWithExecutor<RefCountedMemorySegment, RefCountedMemorySegment> cacheWithExecutor = BlockCacheBuilder
-            .build(CACHE_INITIAL_SIZE, maxCacheBlocks);
-        BlockCache<RefCountedMemorySegment> blockCache = cacheWithExecutor.getCache();
+        BlockCacheBuilder.CacheWithExecutor<RefCountedByteBuffer, RefCountedByteBuffer> cacheWithExecutor = BlockCacheBuilder
+            .build(CACHE_INITIAL_SIZE, maxCacheBlocks, prefetchTracker);
+        BlockCache<RefCountedByteBuffer> blockCache = cacheWithExecutor.getCache();
         java.util.concurrent.ThreadPoolExecutor removalExecutor = cacheWithExecutor.getExecutor();
         LOGGER.info("Creating shared block cache with blocks={}", maxCacheBlocks);
+
+        // Wire cache size into pool's GC debt monitor
+        ((MemorySegmentPool) segmentPool).setCacheEntriesSupplier(blockCache::getCacheSize);
+
+         // Set cache capacity in WorkingSetEstimator for percentage calculations
+        WorkingSetEstimator.getInstance().setCacheCapacity(maxCacheBlocks);
 
         // Calculate worker threads using principled drain-time approach
         int threads = ReadAheadSizingPolicy.calculateWorkerThreads(readAheadQueueSize);
 
         AtomicInteger threadId = new AtomicInteger();
+        // TODO: why not use OS's threadpool
         ExecutorService readAheadExecutor = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "readahead-worker-" + threadId.incrementAndGet());
             t.setDaemon(true);
@@ -315,21 +356,8 @@ public final class PoolBuilder {
         Worker sharedReadaheadWorker = new QueuingWorker(readAheadQueueSize, readAheadExecutor);
         LOGGER.info("Created shared read-ahead worker: queueSize={} executorThreads={}", readAheadQueueSize, threads);
 
-        // Create node-level FileChannel cache with O_DIRECT support
-        int maxFileChannels = PoolSizeCalculator.NODE_MAX_FILE_CHANNELS_SETTING.get(settings);
-        long fdCacheExpireSeconds = PoolSizeCalculator.NODE_FD_CACHE_EXPIRE_SECONDS_SETTING.get(settings);
-        java.nio.file.OpenOption directOpenOption;
-        try {
-            directOpenOption = DirectIOReaderUtil.getDirectOpenOption();
-        } catch (UnsupportedOperationException e) {
-            LOGGER.warn("Direct I/O not available, FileChannelCache will use buffered I/O");
-            directOpenOption = null;
-        }
-        FileChannelCache fileChannelCache = new FileChannelCache(maxFileChannels, fdCacheExpireSeconds, directOpenOption);
-        LOGGER.info("Created shared FileChannel cache: maxOpenFDs={}, expireAfterAccessSeconds={}", maxFileChannels, fdCacheExpireSeconds);
-
         // Start telemetry
-        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache, fileChannelCache);
+        TelemetryThread telemetry = new TelemetryThread(segmentPool, blockCache);
 
         return new PoolResources(
             segmentPool,
@@ -340,7 +368,8 @@ public final class PoolBuilder {
             telemetry,
             removalExecutor,
             readAheadExecutor,
-            fileChannelCache
+            cacheWithExecutor.getPrefetchTracker(),
+            prefetchExecutor
         );
     }
 }

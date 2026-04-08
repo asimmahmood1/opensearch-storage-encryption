@@ -48,6 +48,10 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
     private static final int QUEUE_PRESSURE_NUM = 3;
     private static final int QUEUE_PRESSURE_DEN = 4;
 
+    // Thread pool name fragments allowed to trigger read-ahead.
+    private static final String SEARCH_THREAD_MARKER = "[search]";
+    private static final String INDEX_SEARCHER_THREAD_MARKER = "[index_searcher]";
+
     // Desired tail (exclusive, in blocks), and scheduled tail (exclusive, in blocks).
     private volatile long desiredEndBlock = 0;
     private volatile long lastScheduledEndBlock = 0;
@@ -133,6 +137,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
      *
      * We only react on misses:
      *  - bail if worker is globally paused (node-wide thrash/pressure)
+     *  - bail if thread is not a search thread
      *  - ask policy if this access pattern should trigger readahead
      *  - extend desired tail to currBlock + leadBlocks() (best-effort monotonic)
      *  - wake worker once if we grew enough since the last wake
@@ -142,7 +147,9 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         if (isClosed || wasHit) {
             return;
         }
-
+        if (!isSearchThread()) {
+            return;
+        }
         if (worker.isReadAheadPaused()) {
             return;
         }
@@ -315,6 +322,9 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         if (isClosed) {
             return;
         }
+        if (!isSearchThread()) {
+            return;
+        }
         if (worker.isReadAheadPaused()) {
             return;
         }
@@ -362,6 +372,11 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         desiredEndBlock = lastScheduledEndBlock;
         lastWakeDesiredEndBlock = lastScheduledEndBlock;
         WAKEUP_VH.setRelease(this, 0);
+    }
+
+    private static boolean isSearchThread() {
+        String name = Thread.currentThread().getName();
+        return name.contains(SEARCH_THREAD_MARKER) || name.contains(INDEX_SEARCHER_THREAD_MARKER);
     }
 
     private boolean maybeWakeWorkerOnce() {

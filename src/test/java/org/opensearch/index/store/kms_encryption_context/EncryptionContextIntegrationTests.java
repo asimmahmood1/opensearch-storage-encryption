@@ -4,12 +4,13 @@
  */
 package org.opensearch.index.store.kms_encryption_context;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.util.Collections;
 
-import org.apache.lucene.tests.util.LuceneTestCase;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.metadata.RepositoriesMetadata;
@@ -21,14 +22,17 @@ import org.opensearch.common.settings.Settings;
  * Integration tests for encryption context resolution.
  * These tests verify the end-to-end behavior of resolvers with mocked cluster metadata.
  */
-public class EncryptionContextIntegrationTests extends LuceneTestCase {
+import org.junit.Test;
+
+public class EncryptionContextIntegrationTests {
 
     private static final String AMAZON_ENC_CTX_VALUE = "domainARN=arn:aws:es:eu-west-1:110365260509:domain/test-domain";
 
     /**
      * Test that Amazon resolver finds encryption context among multiple repositories.
      */
-    public void testAmazonResolverFindsCorrectRepositoryAmongMultiple() {
+    @Test
+    public void AmazonResolverFindsCorrectRepositoryAmongMultiple() {
         // Create multiple repositories, only one with encryption context
         Settings repo1Settings = Settings.builder().put("type", "s3").put("bucket", "bucket1").build();
 
@@ -59,7 +63,8 @@ public class EncryptionContextIntegrationTests extends LuceneTestCase {
     /**
      * Test that Amazon resolver returns first matching repository when multiple have encryption context.
      */
-    public void testAmazonResolverReturnsFirstMatchingRepository() {
+    @Test
+    public void AmazonResolverReturnsFirstMatchingRepository() {
         String firstEncCtx = "domainARN=arn:aws:es:us-east-1:111:domain/first";
         String secondEncCtx = "domainARN=arn:aws:es:us-west-2:222:domain/second";
 
@@ -83,7 +88,8 @@ public class EncryptionContextIntegrationTests extends LuceneTestCase {
     /**
      * Test Amazon resolver when no repositories exist.
      */
-    public void testAmazonResolverWithNoRepositories() {
+    @Test
+    public void AmazonResolverWithNoRepositories() {
         ClusterService csNoRepos = createMockClusterService(null);
 
         EncryptionContextResolver resolver = EncryptionContextResolverFactory.create(EncryptionContextResolverType.AMAZON, csNoRepos);
@@ -95,7 +101,8 @@ public class EncryptionContextIntegrationTests extends LuceneTestCase {
     /**
      * Test NONE resolver always returns empty regardless of cluster state.
      */
-    public void testNoneResolverAlwaysReturnsEmpty() {
+    @Test
+    public void NoneResolverAlwaysReturnsEmpty() {
         // Create repository with encryption context
         Settings repoSettings = Settings.builder().put("type", "s3").put("amazon_es_kms_enc_ctx", AMAZON_ENC_CTX_VALUE).build();
 
@@ -115,7 +122,8 @@ public class EncryptionContextIntegrationTests extends LuceneTestCase {
     /**
      * Test that factory creates correct resolver type.
      */
-    public void testFactoryCreatesCorrectResolverTypes() {
+    @Test
+    public void FactoryCreatesCorrectResolverTypes() {
         ClusterService cs = mock(ClusterService.class);
 
         // Test AMAZON type

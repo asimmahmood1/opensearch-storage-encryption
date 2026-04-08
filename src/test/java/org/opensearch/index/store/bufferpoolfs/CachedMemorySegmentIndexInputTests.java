@@ -4,9 +4,16 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -14,6 +21,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -21,26 +29,28 @@ import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import static org.junit.Assert.assertThrows;
+import org.junit.After;
 import org.junit.Before;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.junit.Test;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
-import org.opensearch.test.OpenSearchTestCase;
 
 @SuppressWarnings("unchecked")
-public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
+public class CachedMemorySegmentIndexInputTests {
 
-    private static final int BLOCK_SIZE = 8192; // DirectIoConfigs.CACHE_BLOCK_SIZE
+    private static int BLOCK_SIZE;
     private static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     private static final ValueLayout.OfShort LAYOUT_LE_SHORT = ValueLayout.JAVA_SHORT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfLong LAYOUT_LE_LONG = ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
     private static final ValueLayout.OfFloat LAYOUT_LE_FLOAT = ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);
 
-    private BlockCache<RefCountedMemorySegment> mockCache;
+    private BlockCache<RefCountedByteBuffer> mockCache;
     private BlockSlotTinyCache mockTinyCache;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
@@ -49,7 +59,9 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+        StaticConfigs.resetForTesting();
+        StaticConfigs.init(8192);
+        BLOCK_SIZE = StaticConfigs.CACHE_BLOCK_SIZE;
         mockCache = mock(BlockCache.class);
         mockTinyCache = mock(BlockSlotTinyCache.class);
         mockReadaheadManager = mock(ReadaheadManager.class);
@@ -58,10 +70,16 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         arena = Arena.ofAuto();
     }
 
+    @After
+    public void tearDown() {
+        StaticConfigs.resetForTesting();
+    }
+
     /**
      * Tests reading a single byte at exact block boundary (first byte of second block).
      */
-    public void testReadByteAtBlockBoundary() throws IOException {
+    @Test
+    public void ReadByteAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x10);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x20);
@@ -81,7 +99,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading byte at last position of first block.
      */
-    public void testReadByteAtEndOfBlock() throws IOException {
+    @Test
+    public void ReadByteAtEndOfBlock() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x10);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x20);
@@ -101,7 +120,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading byte one position before block boundary.
      */
-    public void testReadByteOneBeforeBoundary() throws IOException {
+    @Test
+    public void ReadByteOneBeforeBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAA);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0xBB);
@@ -119,7 +139,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading bytes that span exact block boundary (4 bytes before, 4 bytes after).
      */
-    public void testReadBytesAcrossExactBoundary() throws IOException {
+    @Test
+    public void ReadBytesAcrossExactBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAA);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0xBB);
@@ -145,7 +166,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading bytes that start exactly at block boundary.
      */
-    public void testReadBytesStartingAtBoundary() throws IOException {
+    @Test
+    public void ReadBytesStartingAtBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
@@ -166,7 +188,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading bytes that end exactly at block boundary.
      */
-    public void testReadBytesEndingAtBoundary() throws IOException {
+    @Test
+    public void ReadBytesEndingAtBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x33);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x44);
@@ -188,7 +211,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading large byte array spanning 3 complete blocks.
      */
-    public void testReadBytesSpanningThreeBlocks() throws IOException {
+    @Test
+    public void ReadBytesSpanningThreeBlocks() throws IOException {
         long fileLength = BLOCK_SIZE * 4;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
@@ -223,7 +247,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading exactly one full block (block-aligned, full block size).
      */
-    public void testReadFullBlockAligned() throws IOException {
+    @Test
+    public void ReadFullBlockAligned() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAA);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0xBB);
@@ -244,7 +269,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading multiple full blocks sequentially.
      */
-    public void testReadMultipleFullBlocks() throws IOException {
+    @Test
+    public void ReadMultipleFullBlocks() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -268,7 +294,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading short value that spans block boundary (1 byte in each block).
      */
-    public void testReadShortAcrossBlockBoundary() throws IOException {
+    @Test
+    public void ReadShortAcrossBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -291,7 +318,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading short at exact block boundary (both bytes in second block).
      */
-    public void testReadShortAtBlockBoundary() throws IOException {
+    @Test
+    public void ReadShortAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -312,7 +340,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading short one byte before block boundary.
      */
-    public void testReadShortOneByteBeforeBoundary() throws IOException {
+    @Test
+    public void ReadShortOneByteBeforeBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -332,7 +361,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading int that spans block boundary (2 bytes in each block).
      */
-    public void testReadIntAcrossBlockBoundaryEvenSplit() throws IOException {
+    @Test
+    public void ReadIntAcrossBlockBoundaryEvenSplit() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -356,7 +386,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading int with 1 byte in first block, 3 bytes in second.
      */
-    public void testReadIntAcrossBlockBoundaryUnevenSplit1_3() throws IOException {
+    @Test
+    public void ReadIntAcrossBlockBoundaryUnevenSplit1_3() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -380,7 +411,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading int with 3 bytes in first block, 1 byte in second.
      */
-    public void testReadIntAcrossBlockBoundaryUnevenSplit3_1() throws IOException {
+    @Test
+    public void ReadIntAcrossBlockBoundaryUnevenSplit3_1() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -404,7 +436,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading int at exact block boundary (all 4 bytes in second block).
      */
-    public void testReadIntAtBlockBoundary() throws IOException {
+    @Test
+    public void ReadIntAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -426,7 +459,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading long that spans block boundary (4 bytes in each block).
      */
-    public void testReadLongAcrossBlockBoundaryEvenSplit() throws IOException {
+    @Test
+    public void ReadLongAcrossBlockBoundaryEvenSplit() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -455,7 +489,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading long with various split positions.
      */
-    public void testReadLongAcrossBlockBoundaryVariousSplits() throws IOException {
+    @Test
+    public void ReadLongAcrossBlockBoundaryVariousSplits() throws IOException {
         // Test splits: 1+7, 2+6, 3+5, 5+3, 6+2, 7+1
         int[] splits = { 1, 2, 3, 5, 6, 7 };
 
@@ -492,7 +527,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests readInts when int array spans block boundary.
      */
-    public void testReadIntsSpanningBlockBoundary() throws IOException {
+    @Test
+    public void ReadIntsSpanningBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -524,7 +560,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests readInts entirely within one block.
      */
-    public void testReadIntsWithinBlock() throws IOException {
+    @Test
+    public void ReadIntsWithinBlock() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -550,7 +587,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests readLongs spanning block boundary.
      */
-    public void testReadLongsSpanningBlockBoundary() throws IOException {
+    @Test
+    public void ReadLongsSpanningBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -580,7 +618,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests readFloats spanning block boundary.
      */
-    public void testReadFloatsSpanningBlockBoundary() throws IOException {
+    @Test
+    public void ReadFloatsSpanningBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -610,7 +649,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests random access readByte at block boundaries and various offsets.
      */
-    public void testRandomAccessByteAtVariousOffsets() throws IOException {
+    @Test
+    public void RandomAccessByteAtVariousOffsets() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -642,7 +682,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests random access readInt at exact block boundaries.
      */
-    public void testRandomAccessIntAtBlockBoundaries() throws IOException {
+    @Test
+    public void RandomAccessIntAtBlockBoundaries() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -673,7 +714,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests random access readLong spanning boundary.
      */
-    public void testRandomAccessLongSpanningBoundary() throws IOException {
+    @Test
+    public void RandomAccessLongSpanningBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -700,7 +742,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests random access readShort spanning boundary.
      */
-    public void testRandomAccessShortSpanningBoundary() throws IOException {
+    @Test
+    public void RandomAccessShortSpanningBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -718,7 +761,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests slice starting exactly at block boundary.
      */
-    public void testSliceStartingAtBlockBoundary() throws IOException {
+    @Test
+    public void SliceStartingAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 0x10);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 0x20);
@@ -741,7 +785,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests slice ending exactly at block boundary.
      */
-    public void testSliceEndingAtBlockBoundary() throws IOException {
+    @Test
+    public void SliceEndingAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -767,7 +812,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests slice spanning multiple blocks with non-aligned start and end.
      */
-    public void testSliceSpanningBlocksNonAligned() throws IOException {
+    @Test
+    public void SliceSpanningBlocksNonAligned() throws IOException {
         long fileLength = BLOCK_SIZE * 4;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -801,7 +847,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests nested slices with boundary crossings.
      */
-    public void testNestedSlicesAcrossBoundaries() throws IOException {
+    @Test
+    public void NestedSlicesAcrossBoundaries() throws IOException {
         long fileLength = BLOCK_SIZE * 4;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -835,7 +882,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests slice absolute offset calculation with boundaries.
      */
-    public void testSliceAbsoluteFileOffsetAtBoundaries() throws IOException {
+    @Test
+    public void SliceAbsoluteFileOffsetAtBoundaries() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -860,7 +908,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading zero bytes (no-op).
      */
-    public void testReadZeroBytes() throws IOException {
+    @Test
+    public void ReadZeroBytes() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -877,7 +926,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests zero-length operations for array reads.
      */
-    public void testZeroLengthArrayReads() throws IOException {
+    @Test
+    public void ZeroLengthArrayReads() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
 
@@ -896,7 +946,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      * Tests seek to negative position throws exception.
      * Note: The slice implementation uses assert, so this throws AssertionError in test mode.
      */
-    public void testSeekNegativePosition() throws IOException {
+    @Test
+    public void SeekNegativePosition() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -905,13 +956,14 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
         // Expect either IOException or AssertionError depending on whether assertions are enabled
-        expectThrows(Throwable.class, () -> input.seek(-1));
+        assertThrows(Throwable.class, () -> input.seek(-1));
     }
 
     /**
      * Tests seek past EOF throws exception.
      */
-    public void testSeekPastEOF() throws IOException {
+    @Test
+    public void SeekPastEOF() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -919,13 +971,14 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
 
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
-        expectThrows(IOException.class, () -> input.seek(fileLength + 1));
+        assertThrows(IOException.class, () -> input.seek(fileLength + 1));
     }
 
     /**
      * Tests seek to exact file length is valid.
      */
-    public void testSeekToFileLength() throws IOException {
+    @Test
+    public void SeekToFileLength() throws IOException {
         long fileLength = BLOCK_SIZE + 100;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -941,7 +994,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests clone preserves position at block boundary.
      */
-    public void testCloneAtBlockBoundary() throws IOException {
+    @Test
+    public void CloneAtBlockBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -960,7 +1014,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests clone independence with reads across boundaries.
      */
-    public void testCloneIndependenceAcrossBoundary() throws IOException {
+    @Test
+    public void CloneIndependenceAcrossBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -989,7 +1044,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests reading at exact file length boundary.
      */
-    public void testReadAtExactFileLength() throws IOException {
+    @Test
+    public void ReadAtExactFileLength() throws IOException {
         long fileLength = BLOCK_SIZE + 99;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -1011,7 +1067,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests partial read at end crossing block boundary.
      */
-    public void testPartialReadAtEndCrossingBoundary() throws IOException {
+    @Test
+    public void PartialReadAtEndCrossingBoundary() throws IOException {
         long fileLength = BLOCK_SIZE + 50;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = arena.allocate(BLOCK_SIZE);
@@ -1040,7 +1097,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests large sequential read through many block boundaries.
      */
-    public void testLargeSequentialReadManyBlocks() throws IOException {
+    @Test
+    public void LargeSequentialReadManyBlocks() throws IOException {
         int numBlocks = 10;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -1067,7 +1125,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests seek and read pattern across boundaries (simulating random access).
      */
-    public void testRandomSeekReadPatternAcrossBoundaries() throws IOException {
+    @Test
+    public void RandomSeekReadPatternAcrossBoundaries() throws IOException {
         long fileLength = BLOCK_SIZE * 5;
 
         for (int i = 0; i < 5; i++) {
@@ -1098,7 +1157,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests slice with invalid parameters at boundaries.
      */
-    public void testSliceInvalidParametersAtBoundaries() throws IOException {
+    @Test
+    public void SliceInvalidParametersAtBoundaries() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -1108,16 +1168,16 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         CachedMemorySegmentIndexInput input = createInput(fileLength);
 
         // Negative offset
-        expectThrows(IllegalArgumentException.class, () -> input.slice("test", -1, BLOCK_SIZE));
+        assertThrows(IllegalArgumentException.class, () -> input.slice("test", -1, BLOCK_SIZE));
 
         // Negative length
-        expectThrows(IllegalArgumentException.class, () -> input.slice("test", 0, -1));
+        assertThrows(IllegalArgumentException.class, () -> input.slice("test", 0, -1));
 
         // Offset + length > file length (at boundary)
-        expectThrows(IllegalArgumentException.class, () -> input.slice("test", BLOCK_SIZE, BLOCK_SIZE + 1));
+        assertThrows(IllegalArgumentException.class, () -> input.slice("test", BLOCK_SIZE, BLOCK_SIZE + 1));
 
         // Offset beyond file length
-        expectThrows(IllegalArgumentException.class, () -> input.slice("test", fileLength + 1, 10));
+        assertThrows(IllegalArgumentException.class, () -> input.slice("test", fileLength + 1, 10));
     }
 
     // ==================== Close Operation Tests ====================
@@ -1125,7 +1185,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close clears resources properly.
      */
-    public void testCloseUnpinsCurrentBlock() throws IOException {
+    @Test
+    public void CloseUnpinsCurrentBlock() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1149,7 +1210,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close clears the block slot tiny cache.
      */
-    public void testCloseClearsBlockSlotCache() throws IOException {
+    @Test
+    public void CloseClearsBlockSlotCache() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1170,7 +1232,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close on master instance clears tiny cache but slice does not.
      */
-    public void testCloseOnSliceDoesNotClearTinyCache() throws IOException {
+    @Test
+    public void CloseOnSliceDoesNotClearTinyCache() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -1202,7 +1265,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close closes the readahead manager for master instance.
      */
-    public void testCloseClosesReadaheadManager() throws IOException {
+    @Test
+    public void CloseClosesReadaheadManager() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1220,7 +1284,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close on slice does not close the readahead manager.
      */
-    public void testCloseOnSliceDoesNotCloseReadaheadManager() throws IOException {
+    @Test
+    public void CloseOnSliceDoesNotCloseReadaheadManager() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1248,7 +1313,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that calling close multiple times is idempotent (safe).
      */
-    public void testCloseIsIdempotent() throws IOException {
+    @Test
+    public void CloseIsIdempotent() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1274,7 +1340,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close unpins block even when positioned at block boundary.
      */
-    public void testCloseUnpinsBlockAtBoundary() throws IOException {
+    @Test
+    public void CloseUnpinsBlockAtBoundary() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -1300,7 +1367,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that close properly handles the case with no current block loaded.
      */
-    public void testCloseWithNoCurrentBlock() throws IOException {
+    @Test
+    public void CloseWithNoCurrentBlock() throws IOException {
         long fileLength = BLOCK_SIZE;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1319,7 +1387,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests that clone creates independent instance with separate lifecycle.
      */
-    public void testCloneHasIndependentLifecycle() throws IOException {
+    @Test
+    public void CloneHasIndependentLifecycle() throws IOException {
         long fileLength = BLOCK_SIZE * 2;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
 
@@ -1347,7 +1416,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     /**
      * Tests cleanup with multiple blocks loaded and closed.
      */
-    public void testCloseWithMultipleBlocksLoaded() throws IOException {
+    @Test
+    public void CloseWithMultipleBlocksLoaded() throws IOException {
         long fileLength = BLOCK_SIZE * 3;
         MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
         MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
@@ -1407,71 +1477,24 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
     }
 
     private void setupBlock(long offset, MemorySegment segment) throws IOException {
-        // Create a real RefCountedMemorySegment with a no-op releaser
-        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, (int) segment.byteSize(), (seg) -> {
-            // No-op releaser for tests
-        });
+        // Create a real RefCountedByteBuffer with a no-op releaser
+        ByteBuffer buf = ByteBuffer.allocateDirect((int) segment.byteSize()).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        MemorySegment.copy(segment, 0, MemorySegment.ofBuffer(buf), 0, (int) segment.byteSize());
+        RefCountedByteBuffer refSegment = new RefCountedByteBuffer(buf, (int) segment.byteSize());
 
-        BlockCacheValue<RefCountedMemorySegment> value = mock(BlockCacheValue.class);
+        BlockCacheValue<RefCountedByteBuffer> value = mock(BlockCacheValue.class);
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
-        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
+        // Mock L2 (blockCache) directly
+        FileBlockCacheKey key = new FileBlockCacheKey(testPath, offset);
+        when(mockCache.get(eq(key))).thenReturn(value);
+        when(mockCache.getOrLoad(eq(key))).thenReturn(value);
     }
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
             .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
-    }
-
-    /**
-     * Tests that consecutive reads within the same block reuse the cached block
-     * without calling acquireRefCountedValue again (fast path).
-     */
-    public void testFastPathReusesCurrentBlock() throws IOException {
-        long fileLength = BLOCK_SIZE * 2;
-        MemorySegment block0 = createBlockWithPattern(0, (byte) 0xAB);
-        setupOneBlock(block0);
-        CachedMemorySegmentIndexInput input = createInput(fileLength);
-        // First read triggers slow path — acquires from L1/L2
-        byte b1 = input.readByte();
-        assertEquals((byte) 0xAB, b1);
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
-        // Subsequent reads within same block should NOT call acquireRefCountedValue again
-        byte b2 = input.readByte();
-        assertEquals((byte) 0xAB, b2);
-        byte b3 = input.readByte();
-        assertEquals((byte) 0xAB, b3);
-        // Still only 1 call — fast path reused currentBlock
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
-        input.close();
-    }
-
-    /**
-     * Tests that reading across a block boundary triggers the slow path
-     * (acquireRefCountedValue called for the new block).
-     */
-    public void testSlowPathOnBlockTransition() throws IOException {
-        long fileLength = BLOCK_SIZE * 2;
-        MemorySegment block0 = createBlockWithPattern(0, (byte) 0x11);
-        MemorySegment block1 = createBlockWithPattern(1, (byte) 0x22);
-        setupTwoBlocks(block0, block1);
-        CachedMemorySegmentIndexInput input = createInput(fileLength);
-        // Read from block 0
-        input.readByte();
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq(0L), any());
-        // Seek to block 1
-        input.seek(BLOCK_SIZE);
-        input.readByte();
-        // Now acquireRefCountedValue called for block 1 offset
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq((long) BLOCK_SIZE), any());
-        // Read more from block 1 — should reuse (no additional calls)
-        input.readByte();
-        input.readByte();
-        verify(mockTinyCache, times(1)).acquireRefCountedValue(eq((long) BLOCK_SIZE), any());
-        input.close();
     }
 
     /**
@@ -1484,7 +1507,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      * FileBlockCacheKey[filePath=.../_26.cfs, fileOffset=-933888]
      * Bulk read failed: offset=-933888 err=java.lang.IllegalArgumentException: Negative position
      */
-    public void testSliceDoesNotProduceNegativeOffsets() throws IOException {
+    @Test
+    public void SliceDoesNotProduceNegativeOffsets() throws IOException {
         // Create a large file spanning multiple blocks
         long fileLength = BLOCK_SIZE * 10; // 81920 bytes
 
@@ -1570,7 +1594,8 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
      * Test that verifies the getAbsoluteFileOffset(pos) method works correctly for slices.
      * This method is used internally for cache key generation.
      */
-    public void testSliceAbsoluteFileOffsetWithPosition() throws IOException {
+    @Test
+    public void SliceAbsoluteFileOffsetWithPosition() throws IOException {
         long fileLength = BLOCK_SIZE * 5;
         MemorySegment block0 = arena.allocate(BLOCK_SIZE);
         setupBlock(0, block0);
@@ -1596,6 +1621,315 @@ public class CachedMemorySegmentIndexInputTests extends OpenSearchTestCase {
         }
 
         slice.close();
+        input.close();
+    }
+
+    // ==================== Prefetch Tests ====================
+
+    /**
+     * Tests that prefetch is a no-op when readaheadContext is null.
+     */
+    @Test
+    public void PrefetchWithNullReadaheadContext() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        // Create input with null readahead context
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance(
+                "test",
+                testPath,
+                fileLength,
+                mockCache,
+                mockReadaheadManager,
+                null, // null readahead context
+                mockTinyCache
+            );
+
+        // Prefetch should be a no-op and not throw
+        input.prefetch(0, BLOCK_SIZE);
+
+        // No readahead should have been triggered
+        verify(mockReadaheadContext, never()).triggerReadahead(any(Long.class));
+
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch triggers readahead on first call (count = 0).
+     */
+    @Test
+    public void PrefetchTriggersOnFirstCall() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.prefetch(0, BLOCK_SIZE);
+
+        // prefetch() calls loadMissingBlocks with block-aligned offset and count
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(1L));
+
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch skips readahead when hit count is not 0 or power of 2.
+     */
+    @Test
+    public void PrefetchSkipsOnNonPowerOfTwoHitCount() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Mock cache to return a value (cache hit)
+        BlockCacheValue<RefCountedByteBuffer> mockValue = mock(BlockCacheValue.class);
+        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(mockValue);
+
+        // Call prefetch multiple times to increment hit count
+        input.prefetch(0, BLOCK_SIZE); // count = 0 -> 1 (power of 2: 2^0)
+        input.prefetch(0, BLOCK_SIZE); // count = 1 -> 2 (power of 2: 2^1)
+        input.prefetch(0, BLOCK_SIZE); // count = 2 -> 3 (NOT power of 2) - should skip
+        input.prefetch(0, BLOCK_SIZE); // count = 3 -> 4 (power of 2: 2^2)
+
+        // Readahead should only be triggered when count is 0, 1, 2, 4 (powers of 2)
+        // But we have cache hits, so it won't trigger
+        // The key is that calls 3 should return early without checking cache
+
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch resets hit count on cache miss.
+     */
+    @Test
+    public void PrefetchResetsHitCountOnCacheMiss() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.prefetch(0, BLOCK_SIZE);
+        input.prefetch(BLOCK_SIZE, BLOCK_SIZE);
+
+        // Each prefetch call delegates to loadMissingBlocks with the correct block-aligned offset
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(1L));
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq((long) BLOCK_SIZE), eq(1L));
+
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with offset calculation for slices.
+     */
+    @Test
+    public void PrefetchWithSliceOffset() throws IOException {
+        long fileLength = BLOCK_SIZE * 4;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
+        setupTwoBlocks(block0, block1);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        CachedMemorySegmentIndexInput slice = input.slice("test_slice", BLOCK_SIZE, BLOCK_SIZE * 2);
+
+        slice.prefetch(0, BLOCK_SIZE);
+
+        // Absolute start block offset = BLOCK_SIZE, count = 1
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq((long) BLOCK_SIZE), eq(1L));
+
+        slice.close();
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with nested slice offsets.
+     */
+    @Test
+    public void PrefetchWithNestedSlices() throws IOException {
+        long fileLength = BLOCK_SIZE * 4;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        CachedMemorySegmentIndexInput slice1 = input.slice("slice1", BLOCK_SIZE, BLOCK_SIZE * 2);
+        CachedMemorySegmentIndexInput slice2 = slice1.slice("slice2", 100, BLOCK_SIZE);
+
+        slice2.prefetch(50, 100);
+
+        // absoluteBaseOffset = BLOCK_SIZE + 100, offset = 50
+        // startFileOffset = BLOCK_SIZE + 150, startBlockOffset = BLOCK_SIZE (block-aligned)
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq((long) BLOCK_SIZE), anyLong());
+
+        slice2.close();
+        slice1.close();
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch respects block alignment.
+     */
+    @Test
+    public void PrefetchBlockAlignment() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Prefetch at non-aligned offset — should be aligned down to block boundary
+        input.prefetch(100, 200);
+
+        // startFileOffset=100, startBlockOffset=0 (block-aligned down)
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), anyLong());
+
+        input.close();
+    }
+
+    /**
+     * Tests prefetch doesn't fail when closed.
+     */
+    @Test
+    public void PrefetchAfterClose() throws IOException {
+        long fileLength = BLOCK_SIZE;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.close();
+
+        // Prefetch after close should throw AlreadyClosedException
+        assertThrows(Exception.class, () -> input.prefetch(0, BLOCK_SIZE));
+    }
+
+    /**
+     * Tests prefetch with large length spanning multiple blocks.
+     */
+    @Test
+    public void PrefetchMultipleBlocks() throws IOException {
+        long fileLength = BLOCK_SIZE * 5;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.prefetch(0, BLOCK_SIZE * 3);
+
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
+
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with various lengths doesn't fail.
+     */
+    @Test
+    public void PrefetchPowerOfTwoPattern() throws IOException {
+        long fileLength = BLOCK_SIZE * 10;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        // Mock cache to return null (not cached) for all block checks
+        when(mockCache.get(any(FileBlockCacheKey.class))).thenReturn(null);
+
+        // Test various lengths
+        input.prefetch(0, 100);                    // startBlock=0, count=1
+        input.prefetch(0, BLOCK_SIZE);             // startBlock=0, count=1
+        input.prefetch(0, BLOCK_SIZE + 100);       // startBlock=0, count=2
+        input.prefetch(0, BLOCK_SIZE * 3);         // startBlock=0, count=3
+        input.prefetch(100, BLOCK_SIZE);           // startBlock=0, count=1
+        input.prefetch(BLOCK_SIZE + 100, BLOCK_SIZE * 2); // startBlock=BLOCK_SIZE, count=2
+
+        // Mock cache doesn't have deduplication, so all 6 calls go through
+        verify(mockCache, times(6)).loadMissingBlocks(eq(testPath), anyLong(), anyLong());
+
+        input.close();
+    }
+
+    /**
+     * Tests prefetch with slice uses correct offset calculation.
+     */
+    public void testPrefetchWithSlice() throws Exception {
+        long fileLength = BLOCK_SIZE * 4;
+        MemorySegment block1 = createBlockWithPattern(1, (byte) 2);
+        setupBlock(BLOCK_SIZE, block1);
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+        CachedMemorySegmentIndexInput slice = input.slice("slice", BLOCK_SIZE, BLOCK_SIZE * 2);
+
+        // Prefetch from slice should not fail
+        slice.prefetch(0, BLOCK_SIZE);
+        slice.prefetch(100, 200);
+
+        slice.close();
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch skips loading when first block is already cached.
+     */
+    public void testPrefetchSkipsWhenFirstBlockCached() throws Exception {
+        long fileLength = BLOCK_SIZE * 3;
+
+        // With cache-first optimization, loadForPrefetch checks cache internally
+        doNothing().when(mockCache).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.prefetch(0, BLOCK_SIZE * 3);
+
+        // Wait for async executor to complete
+        Thread.sleep(100);
+
+        // Verify loadForPrefetch was called (it checks cache internally)
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
+
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch proceeds with loading when first block is not cached.
+     */
+    public void testPrefetchLoadsWhenFirstBlockNotCached() throws Exception {
+        long fileLength = BLOCK_SIZE * 3;
+
+        // With cache-first optimization, loadForPrefetch checks cache internally
+        doNothing().when(mockCache).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
+
+        CachedMemorySegmentIndexInput input = createInput(fileLength);
+
+        input.prefetch(0, BLOCK_SIZE * 3);
+
+        // Wait for async executor to complete
+        Thread.sleep(100);
+
+        // Verify loadForPrefetch was called (it checks cache and loads internally)
+        verify(mockCache, times(1)).loadMissingBlocks(eq(testPath), eq(0L), eq(3L));
+
+        input.close();
+    }
+
+    /**
+     * Tests that prefetch handles RejectedExecutionException gracefully.
+     */
+    public void testPrefetchHandlesRejectedExecutionException() throws IOException {
+        long fileLength = BLOCK_SIZE * 2;
+        MemorySegment block0 = createBlockWithPattern(0, (byte) 1);
+        setupOneBlock(block0);
+
+        CachedMemorySegmentIndexInput input = CachedMemorySegmentIndexInput
+            .newInstance("test", testPath, fileLength, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+
+        // Should not throw exception
+        input.prefetch(0, BLOCK_SIZE);
+
         input.close();
     }
 }

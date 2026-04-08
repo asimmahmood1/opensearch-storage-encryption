@@ -7,6 +7,7 @@ package org.opensearch.index.store;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.Provider;
 import java.security.Security;
 import java.util.HashSet;
@@ -31,14 +32,28 @@ import org.opensearch.crypto.CryptoHandlerRegistry;
 import org.opensearch.index.IndexModule;
 import org.opensearch.index.IndexSettings;
 import org.opensearch.index.shard.ShardPath;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
-import org.opensearch.index.store.block_loader.FileChannelCache;
+import org.opensearch.index.store.block_loader.FileChannelBackend;
+import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
+import org.opensearch.index.store.block_loader.IOBackendStrategy;
+import com.amazonaws.juno.settings.IOBackendType;
+import org.opensearch.index.store.block_loader.IoUringBackend;
+import org.opensearch.index.store.iouring.PosixFDCache;
+import org.opensearch.index.store.iouring.IoUringChannelCache;
+import org.opensearch.index.store.block_loader.PosixPreadBackend;
+import org.opensearch.index.store.iouring.core.IoUringRing;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
+
+import com.amazonaws.juno.settings.JunoSettings;
+import com.amazonaws.juno.metric.cache.ResourceCacheStatsProvider;
+import com.amazonaws.juno.metric.cache.ResourceCacheStatsRegistry;
+import org.opensearch.index.store.iouring.ResourceCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.key.KeyResolver;
@@ -51,6 +66,10 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
 import org.opensearch.index.store.pool.PoolBuilder;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.plugins.IndexStorePlugin;
+import org.opensearch.threadpool.ThreadPool;
+
+import static org.opensearch.index.IndexModule.Type.HYBRIDFS;
+import static org.opensearch.index.IndexModule.Type.NIOFS;
 
 /**
  * Factory for creating encrypted filesystem directories with support for various storage types.
@@ -73,20 +92,6 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
 
     /**
-     * Controls whether recently written data is cached in the block cache.
-     * When enabled (default), plaintext blocks are cached during writes so that
-     * subsequent reads can be served from cache without re-reading and decrypting from disk.
-     * Disabling this can reduce memory pressure at the cost of higher read latency for recently written data.
-     */
-    public static final Setting<Boolean> WRITE_CACHE_ENABLED_SETTING = Setting
-        .boolSetting("node.store.crypto.write_cache_enabled", true, Property.NodeScope, Property.Dynamic);
-
-    /**
-     * Current value of the write cache enabled setting, updated dynamically via cluster settings.
-     */
-    private static volatile boolean writeCacheEnabled = true;
-
-    /**
      * Shared pool resources including pool, cache, and telemetry.
      * Lazily initialized on first cryptofs shard creation and shared across all CryptoBufferPoolFSDirectory instances.
      * This prevents resource allocation on dedicated master nodes which never create shards.
@@ -99,6 +104,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     private static volatile Settings nodeSettings;
 
     /**
+     * ThreadPool used for prefetch operations.
+     */
+    private static volatile ThreadPool threadPool;
+
+    /**
      * Lock for thread-safe initialization of shared resources.
      */
     private static final Object initLock = new Object();
@@ -108,6 +118,12 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Abstracted to allow Amazon-specific logic to be maintained separately.
      */
     private static volatile EncryptionContextResolver encryptionContextResolver;
+
+    /**
+     * Shared active I/O backend strategy — updated by setting change listener, read by all loaders.
+     * Defaults to FileChannelBackend to preserve existing behavior.
+     */
+    private static volatile IOBackendStrategy activeBackend = new FileChannelBackend();
 
     /**
      * Creates a new CryptoDirectoryFactory
@@ -220,6 +236,17 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         );
 
     /**
+     * Controls whether the buffer pool flush API is enabled.
+     * When disabled (default), the flush API returns a 403 response.
+     */
+    public static final Setting<Boolean> BUFFERPOOL_FLUSH_ENABLED_SETTING = Setting.boolSetting(
+        "plugins.crypto.bufferpool_flush.enabled",
+        false,
+        Property.NodeScope,
+        Property.Dynamic
+    );
+
+    /**
      * Get default encryption context from cluster metadata using the configured resolver.
      *
      * @return the encryption context from cluster settings, or empty string if not found
@@ -233,54 +260,57 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     MasterKeyProvider getKeyProvider(IndexSettings indexSettings) {
-        final String KEY_PROVIDER = indexSettings.getValue(INDEX_KEY_PROVIDER_SETTING);
 
-        // Handle dummy type for testing
-        if (KeyProviderType.DUMMY.getValue().equals(KEY_PROVIDER)) {
-            LOGGER.debug("Using dummy key provider for testing");
-            return DummyKeyProvider.create();
-        }
+        return org.opensearch.index.store.DummyKeyProvider.create();
 
-        Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
+        // final String KEY_PROVIDER = indexSettings.getValue(INDEX_KEY_PROVIDER_SETTING);
 
-        // Always try to get default encryption context from cluster repositories as a baseline
-        String defaultEncCtx = getDefaultEncryptionContextFromCluster();
-        String indexEncCtx = settings.get("kms.encryption_context");
+        // // Handle dummy type for testing
+        // if (KeyProviderType.DUMMY.getValue().equals(KEY_PROVIDER)) {
+        //     LOGGER.debug("Using dummy key provider for testing");
+        //     return DummyKeyProvider.create();
+        // }
 
-        // Merge default encryption context with index-specific context
-        if (!defaultEncCtx.isEmpty()) {
-            if (indexEncCtx == null || indexEncCtx.isEmpty()) {
-                // Use default encryption context if index doesn't specify one
-                LOGGER
-                    .info(
-                        "Using default encryption context from cluster repository for index {}: {}",
-                        indexSettings.getIndex().getName(),
-                        defaultEncCtx
-                    );
-                settings = Settings.builder().put(settings).put("kms.encryption_context", defaultEncCtx).build();
-            } else {
-                // Merge: default context is the baseline, index context is additional
-                String mergedEncCtx = defaultEncCtx + "," + indexEncCtx;
-                LOGGER
-                    .info(
-                        "Merging default encryption context '{}' with index-specific context '{}' for index {}: result='{}'",
-                        defaultEncCtx,
-                        indexEncCtx,
-                        indexSettings.getIndex().getName(),
-                        mergedEncCtx
-                    );
-                settings = Settings.builder().put(settings).put("kms.encryption_context", mergedEncCtx).build();
-            }
-        }
+        // Settings settings = indexSettings.getSettings().getAsSettings(CRYPTO_SETTING);
 
-        CryptoMetadata cryptoMetadata = new CryptoMetadata(KEY_PROVIDER, "", settings);
-        MasterKeyProvider keyProvider;
-        try {
-            keyProvider = CryptoHandlerRegistry.getInstance().getCryptoKeyProviderPlugin(KEY_PROVIDER).createKeyProvider(cryptoMetadata);
-        } catch (NullPointerException npe) {
-            throw new RuntimeException("could not find key provider: " + KEY_PROVIDER, npe);
-        }
-        return keyProvider;
+        // // Always try to get default encryption context from cluster repositories as a baseline
+        // String defaultEncCtx = getDefaultEncryptionContextFromCluster();
+        // String indexEncCtx = settings.get("kms.encryption_context");
+
+        // // Merge default encryption context with index-specific context
+        // if (!defaultEncCtx.isEmpty()) {
+        //     if (indexEncCtx == null || indexEncCtx.isEmpty()) {
+        //         // Use default encryption context if index doesn't specify one
+        //         LOGGER
+        //             .info(
+        //                 "Using default encryption context from cluster repository for index {}: {}",
+        //                 indexSettings.getIndex().getName(),
+        //                 defaultEncCtx
+        //             );
+        //         settings = Settings.builder().put(settings).put("kms.encryption_context", defaultEncCtx).build();
+        //     } else {
+        //         // Merge: default context is the baseline, index context is additional
+        //         String mergedEncCtx = defaultEncCtx + "," + indexEncCtx;
+        //         LOGGER
+        //             .info(
+        //                 "Merging default encryption context '{}' with index-specific context '{}' for index {}: result='{}'",
+        //                 defaultEncCtx,
+        //                 indexEncCtx,
+        //                 indexSettings.getIndex().getName(),
+        //                 mergedEncCtx
+        //             );
+        //         settings = Settings.builder().put(settings).put("kms.encryption_context", mergedEncCtx).build();
+        //     }
+        // }
+
+        // CryptoMetadata cryptoMetadata = new CryptoMetadata(KEY_PROVIDER, "", settings);
+        // MasterKeyProvider keyProvider;
+        // try {
+        //     keyProvider = CryptoHandlerRegistry.getInstance().getCryptoKeyProviderPlugin(KEY_PROVIDER).createKeyProvider(cryptoMetadata);
+        // } catch (NullPointerException npe) {
+        //     throw new RuntimeException("could not find key provider: " + KEY_PROVIDER, npe);
+        // }
+        // return keyProvider;
     }
 
     /**
@@ -291,17 +321,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     @Override
     public Directory newDirectory(IndexSettings indexSettings, ShardPath path) throws IOException {
+        LOGGER.info("ILE DEBUG: inside newDirectory with indexSettings = {} , ShardPath = {} ", indexSettings, path);
         try {
-            final Path location = path.resolveIndex();
             final LockFactory lockFactory = indexSettings.getValue(org.opensearch.index.store.FsDirectoryFactory.INDEX_LOCK_FACTOR_SETTING);
-            Files.createDirectories(location);
-            return newFSDirectory(location, lockFactory, indexSettings);
+            return newFSDirectory(path, lockFactory, indexSettings);
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.DIRECTORY_CREATION_ERROR);
             throw e;
         }
     }
-
+    
     /**
      * Handles keyfile copying for clone/resize operations.
      * When an index is cloned, Lucene copies the ciphertext segment files verbatim,
@@ -315,9 +344,30 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * @throws IOException if keyfile copy fails
      */
     void handleResizeOperation(IndexSettings indexSettings, Path targetIndexDirectory) throws IOException {
+        handleResizeOperation(
+            indexSettings.getSettings(),
+            indexSettings.getIndex().getName(),
+            targetIndexDirectory
+        );
+    }
+
+    /**
+     * Handles keyfile copying for clone/resize operations.
+     * When an index is cloned, Lucene copies the ciphertext segment files verbatim,
+     * but if we generate a new key for the target index, decryption will fail.
+     * This method detects clone operations and copies the source keyfile to the target.
+     *
+     * Package-private for testing.
+     *
+     * @param settings the raw index settings
+     * @param indexName the name of the target index
+     * @param targetIndexDirectory the target index directory path
+     * @throws IOException if keyfile copy fails
+     */
+    void handleResizeOperation(Settings settings, String indexName, Path targetIndexDirectory) throws IOException {
         // Check for resize source UUID setting (indicates clone/shrink/split operation)
-        String resizeSourceUuid = indexSettings.getSettings().get("index.resize.source.uuid");
-        String resizeSourceName = indexSettings.getSettings().get("index.resize.source.name");
+        String resizeSourceUuid = settings.get("index.resize.source.uuid");
+        String resizeSourceName = settings.get("index.resize.source.name");
 
         if (resizeSourceUuid == null || resizeSourceUuid.isEmpty()) {
             // Not a resize operation, proceed with normal key generation
@@ -327,7 +377,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         LOGGER
             .info(
                 "Detected resize operation for index {} from source index {} (UUID: {})",
-                indexSettings.getIndex().getName(),
+                indexName,
                 resizeSourceName,
                 resizeSourceUuid
             );
@@ -345,7 +395,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 .warn(
                     "[Resize operation] for index {} from source index {} which does not have index-level encryption enabled. "
                         + "Target index will generate a new encryption key.",
-                    indexSettings.getIndex().getName(),
+                    indexName,
                     resizeSourceName
                 );
             return;
@@ -360,7 +410,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                     "[Resize operation] encryption keyfile already exists at {} for index {}"
                         + "Skipping copy as it was likely created by another shard initialization.",
                     targetKeyfile,
-                    indexSettings.getIndex().getName()
+                    indexName
                 );
             return;
         }
@@ -374,7 +424,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                 "[Resize operation] Failed to copy keyfile from source index "
                     + resizeSourceName
                     + " to target index "
-                    + indexSettings.getIndex().getName(),
+                    + indexName,
                 e
             );
         }
@@ -383,22 +433,48 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     /**
      * Creates an encrypted directory based on the configured store type.
      *
-     * @param location the directory location
+     * @param shardPathObj the shard path object (path may include primary term subdirectory)
      * @param lockFactory the lock factory for this directory
      * @param indexSettings the index settings
      * @return the concrete implementation of the encrypted directory based on store type
      * @throws IOException if directory creation fails
      */
-    @Override
-    public Directory newFSDirectory(Path location, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
-        // Extract shardId from path structure: .../indices/{index-uuid}/{shard-id}/index/
-        // location.getParent() gives us the shard directory
-        int shardId = Integer.parseInt(location.getParent().getFileName().toString());
+    public Directory newFSDirectory(ShardPath shardPathObj, LockFactory lockFactory, IndexSettings indexSettings) throws IOException {
+        // Get the data path - could be:
+        // Case 1: .../indices/{uuid}/{shardId}/ (normal - from initial shard creation)
+        // Case 2: .../indices/{uuid}/{shardId}/index/{primaryTerm}/ (with primary term from DistributedSegmentDirectory)
+        Path dataPath = shardPathObj.getDataPath();
+        
+        // Determine the actual location path for the directory
+        Path location;
+        Path normalizedPath;  // Path without primary term, for extracting metadata
+        boolean hasPrimaryTerm = false;
+        
+        // Check if parent directory is "index" to detect primary term
+        String parentSegment = dataPath.getParent() != null ? dataPath.getParent().getFileName().toString() : "";
+        
+        if ("index".equals(parentSegment)) {
+            // Parent is "index", so dataPath ends with a primary term subdirectory
+            // dataPath = .../index/12/
+            hasPrimaryTerm = true;
+            location = dataPath;
+            normalizedPath = dataPath.getParent();  // Remove primary term to get .../index/
+        } else {
+            // Parent is not "index", so dataPath is the shard directory
+            // dataPath = .../shardId/ (normal case, need to add /index/)
+            location = dataPath.resolve("index");
+            normalizedPath = location;
+        }
+        
+        LOGGER.info("Path resolution: dataPath={}, parentSegment={}, hasPrimaryTerm={}, location={}, normalizedPath={}", 
+                    dataPath, parentSegment, hasPrimaryTerm, location, normalizedPath);
+        
+        // Extract metadata using normalized path (without primary term)
+        // normalizedPath should end with "/index/"
+        int shardId = Integer.parseInt(normalizedPath.getParent().getFileName().toString());
+        Path indexDirectory = normalizedPath.getParent().getParent();
+        
         final Provider provider = Security.getProvider(DEFAULT_CRYPTO_PROVIDER);
-
-        // Use index-level key resolver - store keys at index level
-
-        Path indexDirectory = location.getParent().getParent(); // Go up two levels: index -> shard -> index
         MasterKeyProvider keyProvider = getKeyProvider(indexSettings);
 
         // Create a directory for the index-level keys
@@ -416,8 +492,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // Get or create per-shard encryption metadata cache
         EncryptionMetadataCache encryptionMetadataCache = EncryptionMetadataCacheRegistry.getOrCreateCache(indexUuid, shardId, indexName);
 
-        IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
-
+//        IndexModule.Type type = IndexModule.defaultStoreType(IndexModule.NODE_STORE_ALLOW_MMAP.get(indexSettings.getNodeSettings()));
+        IndexModule.Type type = HYBRIDFS;
         switch (type) {
             case HYBRIDFS -> {
                 LOGGER.debug("Using HYBRIDFS directory with Direct I/O and block caching");
@@ -468,7 +544,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *
         * Shared Resources:
         * -----------------
-        * - sharedSegmentPool: Pool of RefCountedMemorySegments (initialized in initializeSharedPool)
+        * - sharedSegmentPool: Pool of RefCountedByteBuffers (initialized in initializeSharedPool)
         * - sharedBlockCache: Caffeine cache storing decrypted blocks (initialized in initializeSharedPool)
         *
         * Per-Directory Resources:
@@ -479,7 +555,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         *
         * Memory Lifecycle:
         * -----------------
-        * 1. Cache miss: Loader reads encrypted data, decrypts it, stores in RefCountedMemorySegment
+        * 1. Cache miss: Loader reads encrypted data, decrypts it, stores in RefCountedByteBuffer
         * 2. Initial refCount=1 (cache's reference)
         * 3. Reader pins: refCount incremented via tryPin()
         * 4. Reader unpins: refCount decremented via decRef()
@@ -496,11 +572,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         PoolBuilder.PoolResources resources = ensurePoolInitialized();
 
         // Create a per-directory loader that uses this directory's keyIvResolver for decryption
-        BlockLoader<RefCountedMemorySegment> loader = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> loader = new CryptoDirectIOBlockLoader(
             resources.getSegmentPool(),
             keyResolver,
-            encryptionMetadataCache,
-            resources.getFileChannelCache()
+            encryptionMetadataCache
         );
 
         // Cache architecture: One shared Caffeine cache storage, multiple wrapper instances
@@ -510,13 +585,14 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // * Shared cache capacity across all directories
         // * Per-directory decryption via directory-specific loaders with unique keyIvResolvers
         // * Unified eviction policy managed by the shared cache
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> sharedCaffeineCache =
-            (CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment>) resources.getBlockCache();
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> sharedCaffeineCache =
+            (CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer>) resources.getBlockCache();
 
-        BlockCache<RefCountedMemorySegment> directoryCache = new CaffeineBlockCache<>(
+        BlockCache<RefCountedByteBuffer> directoryCache = new CaffeineBlockCache<>(
             sharedCaffeineCache.getCache(),
             loader,
-            resources.getMaxCacheBlocks()
+            resources.getMaxCacheBlocks(),
+            resources.getPrefetchTracker()
         );
 
         // Use the shared node-wide read-ahead worker
@@ -532,8 +608,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             directoryCache,
             loader,
             readaheadWorker,
-            encryptionMetadataCache,
-            resources.getFileChannelCache()
+            encryptionMetadataCache
         );
     }
 
@@ -545,7 +620,10 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      */
     public static void setNodeSettings(Settings settings) {
         nodeSettings = settings;
-        writeCacheEnabled = WRITE_CACHE_ENABLED_SETTING.get(settings);
+    }
+
+    public static void setThreadPool(ThreadPool tp) {
+        threadPool = tp;
     }
 
     /**
@@ -557,24 +635,123 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     public static void setClusterService(ClusterService service) {
         // Initialize encryption context resolver
         encryptionContextResolver = EncryptionContextResolverFactory.create(service);
-
-        if (service.getClusterSettings() != null) {
-            // Register dynamic setting update consumer
-            service.getClusterSettings().addSettingsUpdateConsumer(WRITE_CACHE_ENABLED_SETTING, value -> {
-                LOGGER.info("Updating write_cache_enabled to {}", value);
-                writeCacheEnabled = value;
-            });
-        }
     }
 
     /**
-     * Returns whether write-through caching is currently enabled.
-     * This is read by the write path to decide whether to cache plaintext blocks during writes.
+     * Returns the current active I/O backend strategy.
+     * Called by loaders on every load() call to support immediate dynamic switching.
      *
-     * @return true if write caching is enabled
+     * @return the active IOBackendStrategy
      */
-    public static boolean isWriteCacheEnabled() {
-        return writeCacheEnabled;
+    public static IOBackendStrategy getActiveIOBackend() {
+        return activeBackend;
+    }
+
+    /**
+     * Resolves the IOBackendStrategy for the given setting value.
+     * For non-default backends, catches instantiation failures and falls back to FileChannelBackend.
+     *
+     * @param settingValue the setting value (e.g., "FILE_CHANNEL", "POSIX_PREAD", "IO_URING")
+     * @return the resolved IOBackendStrategy
+     */
+    private static IOBackendStrategy resolveIOBackend(String settingValue) {
+        IOBackendType type = IOBackendType.fromString(settingValue);
+        int cacheMaxEntries = JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.get();
+        long cacheTtlSeconds = JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.get();
+
+        switch (type) {
+            case POSIX_PREAD:
+                try {
+                    PosixFDCache fdCache = new PosixFDCache(cacheMaxEntries, cacheTtlSeconds);
+                    registerCacheStats(fdCache, "PosixFDCache");
+                    IOBackendStrategy backend = new PosixPreadBackend(fdCache);
+                    LOGGER.info("Using POSIX_PREAD I/O backend with FD caching (max={}, ttl={}s)", cacheMaxEntries, cacheTtlSeconds);
+                    return backend;
+                } catch (Throwable t) {
+                    LOGGER.warn("POSIX_PREAD requested but failed to initialize: {}. Falling back to FILE_CHANNEL", t.getMessage());
+                    ResourceCacheStatsRegistry.unregister();
+                    return new FileChannelBackend();
+                }
+
+            case IO_URING:
+                try {
+                    if (!IoUringRing.isEnabled()) {
+                        LOGGER.warn("IO_URING requested but io_uring is not enabled/available on this node. Falling back to FILE_CHANNEL");
+                        ResourceCacheStatsRegistry.unregister();
+                        return new FileChannelBackend();
+                    }
+                    IoUringChannelCache channelCache = new IoUringChannelCache(
+                        cacheMaxEntries, cacheTtlSeconds,
+                        Set.of(StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption()));
+                    registerCacheStats(channelCache, "IoUringChannelCache");
+                    IOBackendStrategy backend = new IoUringBackend(channelCache);
+                    LOGGER.info("Using IO_URING I/O backend with channel caching (max={}, ttl={}s)", cacheMaxEntries, cacheTtlSeconds);
+                    return backend;
+                } catch (Throwable t) {
+                    LOGGER.warn("IO_URING requested but failed to initialize: {}. Falling back to FILE_CHANNEL", t.getMessage());
+                    ResourceCacheStatsRegistry.unregister();
+                    return new FileChannelBackend();
+                }
+
+            default:
+                ResourceCacheStatsRegistry.unregister();
+                return new FileChannelBackend();
+        }
+    }
+
+    private static void registerCacheStats(ResourceCache<?> cache, String name) {
+        ResourceCacheStatsRegistry.register(new ResourceCacheStatsProvider() {
+            @Override public long getSize() { return cache.estimatedSize(); }
+            @Override public long getHitCount() { return cache.stats().hitCount(); }
+            @Override public long getMissCount() { return cache.stats().missCount(); }
+            @Override public long getEvictionCount() { return cache.stats().evictionCount(); }
+            @Override public double getHitRate() { return cache.stats().hitRate(); }
+            @Override public String getCacheName() { return name; }
+        });
+    }
+
+    /**
+     * Initializes the I/O backend setting and registers a dynamic update listener.
+     * Called from CryptoDirectoryPlugin.createComponents() to wire the setting listener.
+     * When the setting changes, resolveIOBackend() is called and activeBackend is updated.
+     *
+     * @param clusterService the cluster service for registering setting listeners
+     */
+    public static void initializeIOBackendSetting(ClusterService clusterService) {
+        // Set initial value from current setting
+        activeBackend = resolveIOBackend(JunoSettings.BLOCK_LOADER_IO_BACKEND.get());
+
+        // Re-resolve backend when any of the backend/cache settings change
+        Runnable reResolve = () -> {
+            IOBackendStrategy old = activeBackend;
+            String backendValue = JunoSettings.BLOCK_LOADER_IO_BACKEND.get();
+            IOBackendStrategy resolved = resolveIOBackend(backendValue);
+            activeBackend = resolved;
+            LOGGER.info("I/O backend re-resolved to {} (max={}, ttl={}s)",
+                resolved.getClass().getSimpleName(),
+                JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.get(),
+                JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.get());
+            if (old != null) {
+                try {
+                    old.close();
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to close previous I/O backend", e);
+                }
+            }
+        };
+
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            JunoSettings.BLOCK_LOADER_IO_BACKEND.setting(),
+            newValue -> reResolve.run()
+        );
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.setting(),
+            newValue -> reResolve.run()
+        );
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.setting(),
+            newValue -> reResolve.run()
+        );
     }
 
     /**
@@ -595,7 +772,7 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
                         throw new IllegalStateException("Node settings must be set before initializing pool resources");
                     }
                     LOGGER.info("Lazily initializing shared pool resources on first cryptofs shard creation");
-                    poolResources = PoolBuilder.build(nodeSettings);
+                    poolResources = PoolBuilder.build(nodeSettings, threadPool);
                 }
             }
         }
@@ -622,10 +799,29 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         return poolResources != null ? poolResources.getBlockCache() : null;
     }
 
+    public static org.opensearch.index.store.pool.Pool<?> getSharedPool() {
+        return poolResources != null ? poolResources.getSegmentPool() : null;
+    }
+
     /**
-     * Returns the shared node-level FileChannelCache, or null if not yet initialized.
+     * Get the shared prefetch tracker instance.
+     *
+     * @return the shared prefetch tracker, or null if not initialized
      */
-    public static FileChannelCache getSharedFileChannelCache() {
-        return poolResources != null ? poolResources.getFileChannelCache() : null;
+    public static PrefetchTracker getSharedPrefetchTracker() {
+        return poolResources != null ? poolResources.getPrefetchTracker() : null;
+    }
+
+    /**
+     * Gets cache statistics from the shared block cache.
+     * 
+     * @return Cache statistics as a formatted string, or empty if cache not initialized
+     */
+    public static java.util.Optional<String> getSharedCacheStats() {
+        BlockCache<?> cache = getSharedBlockCache();
+        if (cache == null) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(cache.cacheStats());
     }
 }

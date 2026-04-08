@@ -4,6 +4,7 @@
  */
 package org.opensearch.index.store.cipher;
 
+import org.junit.Test;
 import static org.junit.Assert.assertArrayEquals;
 
 import java.nio.charset.StandardCharsets;
@@ -14,12 +15,11 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
-import org.opensearch.test.OpenSearchTestCase;
 
 /**
  * Tests for cipher encryption and decryption operations
  */
-public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
+public class CipherEncryptionDecryptionTests {
 
     private static final byte[] TEST_KEY = new byte[32]; // 256-bit AES key
     private static final byte[] TEST_IV = new byte[16];  // 128-bit IV
@@ -30,7 +30,8 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         Arrays.fill(TEST_IV, (byte) 0x24);
     }
 
-    public void testEncryptDecryptWithCTR() throws Exception {
+    @Test
+    public void EncryptDecryptWithCTR() throws Exception {
         // Get cipher from pool
         Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
@@ -46,7 +47,8 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testEncryptDecryptWithGCM() throws Exception {
+    @Test
+    public void EncryptDecryptWithGCM() throws Exception {
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
 
         // Encrypt with tag
@@ -58,7 +60,8 @@ public class CipherEncryptionDecryptionTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testEncryptWithGcmAndDecryptWithCTR() throws Exception {
+    @Test
+    public void EncryptWithGcmAndDecryptWithCTR() throws Exception {
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
 
         // Encrypt with GCM without tag

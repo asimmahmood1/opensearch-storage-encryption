@@ -5,6 +5,7 @@
 package org.opensearch.index.store.key;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -38,7 +40,6 @@ import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
 import org.opensearch.index.store.CryptoDirectoryFactory;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
@@ -46,7 +47,7 @@ import org.opensearch.transport.client.IndicesAdminClient;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 
 @ThreadLeakFilters(filters = CaffeineThreadLeakFilter.class)
-public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
+public class NodeLevelKeyCacheTests {
 
     @Mock
     private DefaultKeyResolver mockResolver;
@@ -70,7 +71,6 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         MockitoAnnotations.openMocks(this);
 
         // Create test keys
@@ -111,7 +111,6 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         ShardKeyResolverRegistry.clearCache();
-        super.tearDown();
     }
 
     /**
@@ -126,7 +125,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         resolverCache.put(new ShardCacheKey(indexUuid, shardId, "test-index"), mockResolver);
     }
 
-    public void testInitialization() {
+    @Test
+    public void Initialization() {
         Settings settings = Settings.builder().put("node.store.crypto.key_refresh_interval", "60s").build();
 
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
@@ -135,11 +135,13 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertNotNull(NodeLevelKeyCache.getInstance());
     }
 
-    public void testGetInstanceWithoutInitialization() {
-        expectThrows(IllegalStateException.class, () -> { NodeLevelKeyCache.getInstance(); });
+    @Test
+    public void GetInstanceWithoutInitialization() {
+        assertThrows(IllegalStateException.class, () -> { NodeLevelKeyCache.getInstance(); });
     }
 
-    public void testInitialKeyLoad() throws Exception {
+    @Test
+    public void InitialKeyLoad() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -154,7 +156,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
 
-    public void testInitialKeyLoadFailure() throws Exception {
+    @Test
+    public void InitialKeyLoadFailure() throws Exception {
         when(mockResolver.loadKeyFromMasterKeyProvider())
             .thenThrow(new RuntimeException("KMS unavailable"));
         
@@ -180,7 +183,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertTrue(thrown.getMessage().contains("Failed to load key for index"));
     }
 
-    public void testCacheHit() throws Exception {
+    @Test
+    public void CacheHit() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -199,7 +203,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
 
-    public void testExpiryWithNegativeOne() throws Exception {
+    @Test
+    public void ExpiryWithNegativeOne() throws Exception {
         // Set expiry to -1 (never expire)
         Settings settings = Settings.builder().put("node.store.crypto.key_expiry_interval", "-1").build();
 
@@ -226,7 +231,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         verify(mockResolver, times(1)).loadKeyFromMasterKeyProvider();
     }
 
-    public void testEviction() throws Exception {
+    @Test
+    public void Eviction() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -249,7 +255,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         verify(mockResolver, times(2)).loadKeyFromMasterKeyProvider();
     }
 
-    public void testSize() throws Exception {
+    @Test
+    public void Size() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -268,7 +275,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertEquals(2, cache.size());
     }
 
-    public void testClear() throws Exception {
+    @Test
+    public void Clear() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -286,7 +294,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertEquals(0, cache.size());
     }
 
-    public void testReset() throws Exception {
+    @Test
+    public void Reset() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -305,7 +314,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertNotNull(thrown);
     }
 
-    public void testConcurrentAccess() throws Exception {
+    @Test
+    public void ConcurrentAccess() throws Exception {
         final AtomicInteger loadCount = new AtomicInteger(0);
 
         when(mockResolver.loadKeyFromMasterKeyProvider()).thenAnswer(invocation -> {
@@ -346,7 +356,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertEquals(1, loadCount.get());
     }
 
-    public void testNullParameters() throws Exception {
+    @Test
+    public void NullParameters() throws Exception {
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
         NodeLevelKeyCache.initialize(settings, MasterKeyHealthMonitor.getInstance());
@@ -383,7 +394,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertTrue(thrown.getMessage().contains("indexUuid cannot be null"));
     }
 
-    public void testNullDependenciesInConstructor() {
+    @Test
+    public void NullDependenciesInConstructor() {
         Settings settings = Settings.EMPTY;
 
         // Test null healthMonitor
@@ -398,7 +410,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertNotNull(thrown);
     }
 
-    public void testDefaultTTLValue() {
+    @Test
+    public void DefaultTTLValue() {
         // Test default TTL when not specified
         Settings settings = Settings.EMPTY;
         MasterKeyHealthMonitor.initialize(settings, mockClient, mockClusterService);
@@ -408,7 +421,8 @@ public class NodeLevelKeyCacheTests extends OpenSearchTestCase {
         assertNotNull(NodeLevelKeyCache.getInstance());
     }
 
-    public void testInvalidRefreshIntervalValues() {
+    @Test
+    public void InvalidRefreshIntervalValues() {
         // Test that invalid time format is rejected
         Settings invalidFormatSettings = Settings.builder().put("node.store.crypto.key_refresh_interval", "invalid").build();
 

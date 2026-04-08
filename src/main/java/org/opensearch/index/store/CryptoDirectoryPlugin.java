@@ -13,7 +13,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import com.amazonaws.juno.settings.JunoSettings;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
@@ -41,7 +40,6 @@ import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
-import org.opensearch.index.store.metrics.BufferPoolMetricsProviderImpl;
 import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
@@ -68,9 +66,6 @@ import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
 import org.opensearch.index.store.hll.WorkingSetEstimatorScheduler;
 import org.opensearch.index.store.rest.RestCacheStatsAction;
-import org.opensearch.index.store.iouring.core.IoUringConfig;
-import org.opensearch.index.store.iouring.core.IoUringMetrics;
-import org.opensearch.index.store.iouring.core.IoUringRing;
 
 /**
  * A plugin that enables index level encryption and decryption.
@@ -117,7 +112,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     CRYPTO_PLUGIN_ENABLED
                 );
         }
-        log.info("bufferpool prefetch enabled: {}", JunoSettings.STORAGE_PREFETCH_ENABLED.get());
+        log.info("bufferpool prefetch enabled: true");
     }
 
     /**
@@ -227,7 +222,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         CryptoDirectoryPlugin.remoteStoreSettings = new RemoteStoreSettings(environment.settings(), clusterService.getClusterSettings());
 
         // Initialize StaticConfigs with the DynamicConfig block size value
-        StaticConfigs.init(JunoSettings.JUNO_STORAGE_ENCRYPTION_BLOCK_SIZE_SETTING.get());
+        StaticConfigs.init(1 << 20); // 1MB default block size
 
         // Set cluster service for accessing cluster metadata (e.g., repository settings)
         CryptoDirectoryFactory.setClusterService(clusterService);
@@ -254,98 +249,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         WorkingSetEstimatorScheduler hllScheduler =
             new WorkingSetEstimatorScheduler(threadPool);
 
-        // Register buffer pool metrics provider with JunoSearchWorker
-        BufferPoolMetricsProviderImpl metricsProvider =
-            new BufferPoolMetricsProviderImpl(hllScheduler);
-        com.amazonaws.juno.metric.bufferpool.BufferPoolMetricsRegistry.register(metricsProvider);
-
-        // Initialize io_uring and register metrics provider
-        initializeIoUring(environment.settings());
-
         log.info("ILE DEBUG: Plugin initialized!");
 
         return Collections.singletonList(hllScheduler);
-    }
-
-    /**
-     * Initializes io_uring ring and registers the metrics provider with JunoSearchWorker.
-     */
-    private void initializeIoUring(Settings settings) {
-        boolean ioUringEnabled = com.amazonaws.juno.settings.JunoSettings.IOURING_ENABLED.get();
-        IoUringRing.setEnabled(ioUringEnabled);
-
-        if (!ioUringEnabled) {
-            log.info("io_uring is disabled via setting [juno.iouring.enabled]");
-            return;
-        }
-
-        if (!IoUringRing.isAvailable()) {
-            log.warn("io_uring is enabled but not available on this system, skipping initialization");
-            IoUringRing.setEnabled(false);
-            return;
-        }
-
-        try {
-            String storageTypeStr = com.amazonaws.juno.settings.JunoSettings.IOURING_STORAGE_TYPE.get();
-            IoUringConfig.StorageType storageType;
-            try {
-                storageType = IoUringConfig.StorageType.valueOf(storageTypeStr.toUpperCase());
-            } catch (IllegalArgumentException e) {
-                log.warn("Unknown io_uring storage type [{}], falling back to GENERIC", storageTypeStr);
-                storageType = IoUringConfig.StorageType.GENERIC;
-            }
-
-            IoUringConfig config = IoUringConfig.builder()
-                .ringSize(com.amazonaws.juno.settings.JunoSettings.IOURING_RING_SIZE.get())
-                .maxInflightOps(com.amazonaws.juno.settings.JunoSettings.IOURING_MAX_INFLIGHT_OPS.get())
-                .pollBackoffInitialNs(com.amazonaws.juno.settings.JunoSettings.IOURING_POLL_BACKOFF_INITIAL_NS.get())
-                .pollBackoffMaxNs(com.amazonaws.juno.settings.JunoSettings.IOURING_POLL_BACKOFF_MAX_NS.get())
-                .shutdownTimeoutMs(com.amazonaws.juno.settings.JunoSettings.IOURING_SHUTDOWN_TIMEOUT_MS.get())
-                .storageType(storageType)
-                .metricsEnabled(com.amazonaws.juno.settings.JunoSettings.IOURING_METRICS_ENABLED.get())
-                .build();
-
-            IoUringRing.initialize(config);
-            log.info("io_uring initialized with config: {}", config);
-
-            // Register metrics provider so NodeStatsCollector can read io_uring metrics
-            com.amazonaws.juno.metric.iouring.IoUringMetricsRegistry.register(new IoUringMetricsProviderImpl());
-        } catch (Exception e) {
-            log.error("Failed to initialize io_uring, disabling", e);
-            IoUringRing.setEnabled(false);
-        }
-    }
-
-    /**
-     * Bridges io_uring metrics to the registry interface consumed by NodeStatsCollector.
-     */
-    private static class IoUringMetricsProviderImpl implements com.amazonaws.juno.metric.iouring.IoUringMetricsProvider {
-        private volatile IoUringMetrics.MetricsSnapshot cachedSnapshot;
-
-        @Override
-        public boolean takeSnapshot() {
-            IoUringRing ring = IoUringRing.getInstanceOrNull();
-            if (ring == null) {
-                cachedSnapshot = null;
-                return false;
-            }
-            cachedSnapshot = ring.takeMetricsSnapshot();
-            return cachedSnapshot != null;
-        }
-
-        @Override public long getSuccessCount() { return cachedSnapshot != null ? cachedSnapshot.successCount() : 0; }
-        @Override public long getFailureCount() { return cachedSnapshot != null ? cachedSnapshot.failureCount() : 0; }
-        @Override public long getSubmissionCount() { return cachedSnapshot != null ? cachedSnapshot.submissionCount() : 0; }
-        @Override public long getMinLatencyNs() { return cachedSnapshot != null ? cachedSnapshot.minLatencyNs() : 0; }
-        @Override public long getMaxLatencyNs() { return cachedSnapshot != null ? cachedSnapshot.maxLatencyNs() : 0; }
-        @Override public long getMeanLatencyNs() { return cachedSnapshot != null ? cachedSnapshot.meanLatencyNs() : 0; }
-        @Override public long getQueueFullEvents() { return cachedSnapshot != null ? cachedSnapshot.queueFullEvents() : 0; }
-        @Override public double getOperationsPerSecond() { return cachedSnapshot != null ? cachedSnapshot.operationsPerSecond() : 0.0; }
-        @Override public double getSuccessRate() { return cachedSnapshot != null ? cachedSnapshot.successRate() : 0.0; }
-        @Override public int getPendingOps() {
-            IoUringRing ring = IoUringRing.getInstanceOrNull();
-            return ring != null ? ring.getPendingCount() : 0;
-        }
     }
 
     @Override

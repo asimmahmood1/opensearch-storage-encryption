@@ -305,12 +305,12 @@ public final class PoolBuilder {
         int readAheadQueueSize = ReadAheadSizingPolicy.calculateQueueSize(maxCacheBlocks);
         LOGGER.info("Calculated read-ahead queue size={} (cache={} blocks)", readAheadQueueSize, maxCacheBlocks);
 
-        int prefetchThreads = com.amazonaws.juno.settings.JunoSettings.STORAGE_PREFETCH_THREAD_COUNT_SETTING.get();
+        int prefetchThreads = -1; // auto-detect
         if (prefetchThreads == -1) {
             // his accounts for approx processors x 1.5 search threads and processors x 2 index_searcher threads
             prefetchThreads = OpenSearchExecutors.allocatedProcessors(settings) * 4;
         }
-        int prefetchQueueSize = com.amazonaws.juno.settings.JunoSettings.STORAGE_PREFETCH_QUEUE_SIZE_SETTING.get();
+        int prefetchQueueSize = -1; // auto-detect
         if (prefetchQueueSize == -1) {
             prefetchQueueSize = prefetchThreads * 1000;
         }

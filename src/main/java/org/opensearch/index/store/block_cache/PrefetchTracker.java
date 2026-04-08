@@ -9,8 +9,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import com.amazonaws.juno.settings.JunoSettings;
-
 /**
  * Tracks prefetch deduplication state and statistics.
  * Encapsulates the in-flight dedup map, counters, and async executor for prefetch operations.
@@ -22,6 +20,7 @@ public class PrefetchTracker {
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
     private final AtomicInteger inflightCount = new AtomicInteger();
     private final Executor executor;
+    private static volatile boolean enabled = true;
 
     private final AtomicLong prefetchCalls = new AtomicLong();
     private final AtomicLong blocksRequested = new AtomicLong();
@@ -55,7 +54,7 @@ public class PrefetchTracker {
      * @param task the runnable to execute
      */
     public void execute(Runnable task) {
-        if (!JunoSettings.STORAGE_PREFETCH_ENABLED.get()) {
+        if (!enabled) {
             return;
         }
         if (inflightCount.get() > maxInflight) {

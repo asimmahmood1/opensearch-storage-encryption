@@ -11,14 +11,15 @@ import java.nio.file.Path;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.index.store.key.KeyResolver;
-import org.opensearch.index.translog.transfer.FileSnapshot;
+import org.opensearch.index.translog.transfer.FileSnapshot.TransferFileSnapshot;
+import org.opensearch.index.translog.transfer.FileSnapshot.TranslogFileSnapshot;
 
 /**
  * Wrapper for TranslogFileSnapshot that provides a decrypting input stream.
  *
  * @opensearch.internal
  */
-public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
+public class DecryptingFileSnapshot extends TransferFileSnapshot {
 
     private static final Logger logger = LogManager.getLogger(DecryptingFileSnapshot.class);
 
@@ -36,13 +37,7 @@ public class DecryptingFileSnapshot extends FileSnapshot.TranslogFileSnapshot {
      * @throws IOException if snapshot metadata cannot be read
      */
     public DecryptingFileSnapshot(TranslogFileSnapshot delegate, KeyResolver keyResolver, String translogUUID) throws IOException {
-        super(
-            delegate.getPrimaryTerm(),
-            delegate.getGeneration(),
-            delegate.getPath(),
-            null  // Not passing checksum - decrypted content has different checksum
-        );
-
+        super(delegate.getPath(), delegate.getPrimaryTerm(), delegate.getChecksum());
         this.delegate = delegate;
         this.keyResolver = keyResolver;
         this.translogUUID = translogUUID;

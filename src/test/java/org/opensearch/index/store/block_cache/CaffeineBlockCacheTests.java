@@ -41,7 +41,6 @@ import org.opensearch.index.store.block_loader.BlockLoader;
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.amazonaws.juno.settings.JunoSettings;
 import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 
 @SuppressWarnings("unchecked")
@@ -58,7 +57,6 @@ public class CaffeineBlockCacheTests {
     public void setUp() throws Exception {
         StaticConfigs.resetForTesting();
         StaticConfigs.init(8192);
-        JunoSettings.STORAGE_PREFETCH_ENABLED.set(true);
         caffeineCache = Caffeine.newBuilder().maximumSize(MAX_BLOCKS).recordStats().build();
         mockLoader = mock(BlockLoader.class);
         defaultExecutor = Executors.newSingleThreadExecutor();
@@ -67,7 +65,6 @@ public class CaffeineBlockCacheTests {
 
     @After
     public void tearDown() throws Exception {
-        JunoSettings.STORAGE_PREFETCH_ENABLED.set(false);
         StaticConfigs.resetForTesting();
         defaultExecutor.shutdown();
         defaultExecutor.awaitTermination(5, TimeUnit.SECONDS);

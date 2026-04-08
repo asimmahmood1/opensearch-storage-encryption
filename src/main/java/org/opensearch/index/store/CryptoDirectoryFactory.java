@@ -41,19 +41,9 @@ import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.block_loader.FileChannelBackend;
 import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
 import org.opensearch.index.store.block_loader.IOBackendStrategy;
-import com.amazonaws.juno.settings.IOBackendType;
-import org.opensearch.index.store.block_loader.IoUringBackend;
-import org.opensearch.index.store.iouring.PosixFDCache;
-import org.opensearch.index.store.iouring.IoUringChannelCache;
-import org.opensearch.index.store.block_loader.PosixPreadBackend;
-import org.opensearch.index.store.iouring.core.IoUringRing;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 
-import com.amazonaws.juno.settings.JunoSettings;
-import com.amazonaws.juno.metric.cache.ResourceCacheStatsProvider;
-import com.amazonaws.juno.metric.cache.ResourceCacheStatsRegistry;
-import org.opensearch.index.store.iouring.ResourceCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
 import org.opensearch.index.store.hybrid.HybridCryptoDirectory;
 import org.opensearch.index.store.key.KeyResolver;
@@ -655,103 +645,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * @return the resolved IOBackendStrategy
      */
     private static IOBackendStrategy resolveIOBackend(String settingValue) {
-        IOBackendType type = IOBackendType.fromString(settingValue);
-        int cacheMaxEntries = JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.get();
-        long cacheTtlSeconds = JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.get();
-
-        switch (type) {
-            case POSIX_PREAD:
-                try {
-                    PosixFDCache fdCache = new PosixFDCache(cacheMaxEntries, cacheTtlSeconds);
-                    registerCacheStats(fdCache, "PosixFDCache");
-                    IOBackendStrategy backend = new PosixPreadBackend(fdCache);
-                    LOGGER.info("Using POSIX_PREAD I/O backend with FD caching (max={}, ttl={}s)", cacheMaxEntries, cacheTtlSeconds);
-                    return backend;
-                } catch (Throwable t) {
-                    LOGGER.warn("POSIX_PREAD requested but failed to initialize: {}. Falling back to FILE_CHANNEL", t.getMessage());
-                    ResourceCacheStatsRegistry.unregister();
-                    return new FileChannelBackend();
-                }
-
-            case IO_URING:
-                try {
-                    if (!IoUringRing.isEnabled()) {
-                        LOGGER.warn("IO_URING requested but io_uring is not enabled/available on this node. Falling back to FILE_CHANNEL");
-                        ResourceCacheStatsRegistry.unregister();
-                        return new FileChannelBackend();
-                    }
-                    IoUringChannelCache channelCache = new IoUringChannelCache(
-                        cacheMaxEntries, cacheTtlSeconds,
-                        Set.of(StandardOpenOption.READ, DirectIOReaderUtil.getDirectOpenOption()));
-                    registerCacheStats(channelCache, "IoUringChannelCache");
-                    IOBackendStrategy backend = new IoUringBackend(channelCache);
-                    LOGGER.info("Using IO_URING I/O backend with channel caching (max={}, ttl={}s)", cacheMaxEntries, cacheTtlSeconds);
-                    return backend;
-                } catch (Throwable t) {
-                    LOGGER.warn("IO_URING requested but failed to initialize: {}. Falling back to FILE_CHANNEL", t.getMessage());
-                    ResourceCacheStatsRegistry.unregister();
-                    return new FileChannelBackend();
-                }
-
-            default:
-                ResourceCacheStatsRegistry.unregister();
-                return new FileChannelBackend();
-        }
-    }
-
-    private static void registerCacheStats(ResourceCache<?> cache, String name) {
-        ResourceCacheStatsRegistry.register(new ResourceCacheStatsProvider() {
-            @Override public long getSize() { return cache.estimatedSize(); }
-            @Override public long getHitCount() { return cache.stats().hitCount(); }
-            @Override public long getMissCount() { return cache.stats().missCount(); }
-            @Override public long getEvictionCount() { return cache.stats().evictionCount(); }
-            @Override public double getHitRate() { return cache.stats().hitRate(); }
-            @Override public String getCacheName() { return name; }
-        });
+        return new FileChannelBackend();
     }
 
     /**
      * Initializes the I/O backend setting and registers a dynamic update listener.
-     * Called from CryptoDirectoryPlugin.createComponents() to wire the setting listener.
-     * When the setting changes, resolveIOBackend() is called and activeBackend is updated.
      *
      * @param clusterService the cluster service for registering setting listeners
      */
     public static void initializeIOBackendSetting(ClusterService clusterService) {
-        // Set initial value from current setting
-        activeBackend = resolveIOBackend(JunoSettings.BLOCK_LOADER_IO_BACKEND.get());
-
-        // Re-resolve backend when any of the backend/cache settings change
-        Runnable reResolve = () -> {
-            IOBackendStrategy old = activeBackend;
-            String backendValue = JunoSettings.BLOCK_LOADER_IO_BACKEND.get();
-            IOBackendStrategy resolved = resolveIOBackend(backendValue);
-            activeBackend = resolved;
-            LOGGER.info("I/O backend re-resolved to {} (max={}, ttl={}s)",
-                resolved.getClass().getSimpleName(),
-                JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.get(),
-                JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.get());
-            if (old != null) {
-                try {
-                    old.close();
-                } catch (Exception e) {
-                    LOGGER.warn("Failed to close previous I/O backend", e);
-                }
-            }
-        };
-
-        clusterService.getClusterSettings().addSettingsUpdateConsumer(
-            JunoSettings.BLOCK_LOADER_IO_BACKEND.setting(),
-            newValue -> reResolve.run()
-        );
-        clusterService.getClusterSettings().addSettingsUpdateConsumer(
-            JunoSettings.BLOCK_LOADER_CACHE_MAX_ENTRIES.setting(),
-            newValue -> reResolve.run()
-        );
-        clusterService.getClusterSettings().addSettingsUpdateConsumer(
-            JunoSettings.BLOCK_LOADER_CACHE_TTL_SECONDS.setting(),
-            newValue -> reResolve.run()
-        );
+        activeBackend = new FileChannelBackend();
     }
 
     /**

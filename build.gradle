@@ -100,7 +100,8 @@ test {
     systemProperty 'tests.security.manager', 'false'
     systemProperty 'tests.jvm.argline', '--enable-native-access=ALL-UNNAMED'
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED'
+        '--enable-native-access=ALL-UNNAMED',
+        '--enable-preview'
     ]
 }
 
@@ -112,7 +113,8 @@ tasks.named('internalClusterTest').configure {
         showStandardStreams = true
     }
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED'
+        '--enable-native-access=ALL-UNNAMED',
+        '--enable-preview'
     ]
 }
 
@@ -143,6 +145,7 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 21
     options.compilerArgs << '-Xlint:-deprecation'
+    options.compilerArgs += "--enable-preview"
 }
 
 tasks.withType(Javadoc).configureEach {
@@ -151,6 +154,7 @@ tasks.withType(Javadoc).configureEach {
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
     options.addStringOption('source', '21')
+    options.addStringOption('-enable-preview', '-quiet')
     failOnError = false
 }
 

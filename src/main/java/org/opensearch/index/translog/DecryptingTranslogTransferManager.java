@@ -6,7 +6,6 @@ package org.opensearch.index.translog;
 
 import java.io.IOException;
 
-import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.common.blobstore.BlobPath;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.remote.RemoteTranslogTransferTracker;
@@ -87,12 +86,11 @@ public class DecryptingTranslogTransferManager extends TranslogTransferManager {
     @Override
     public boolean transferSnapshot(
         TransferSnapshot transferSnapshot,
-        TranslogTransferListener translogTransferListener,
-        CryptoMetadata cryptoMetadata
+        TranslogTransferListener translogTransferListener
     ) throws IOException {
         TransferSnapshot decryptingSnapshot = new DecryptingTransferSnapshot(transferSnapshot, keyResolver, translogUUID, cryptoFactory);
 
         // Call parent with decryption wrapper
-        return super.transferSnapshot(decryptingSnapshot, translogTransferListener, cryptoMetadata);
+        return super.transferSnapshot(decryptingSnapshot, translogTransferListener);
     }
 }

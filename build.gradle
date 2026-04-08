@@ -11,7 +11,7 @@
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.6.0-SNAPSHOT")
+        opensearch_version = System.getProperty("opensearch.version", "3.3.2-SNAPSHOT")
     }
 
     repositories {
@@ -126,22 +126,22 @@ testClusters.yamlRestTest {
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
     options.encoding = 'UTF-8'
-    options.release = 25
+    options.release = 21
     options.compilerArgs << '-Xlint:-deprecation'
 }
 
@@ -150,7 +150,7 @@ tasks.withType(Javadoc).configureEach {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption('source', '25')
+    options.addStringOption('source', '21')
     failOnError = false
 }
 
@@ -198,8 +198,8 @@ jcstress {
 // to generate META-INF/TestList, and JMH needs it for benchmark generation.
 afterEvaluate {
     tasks.named('compileJcstressJava').configure {
-        sourceCompatibility = JavaVersion.VERSION_25
-        targetCompatibility = JavaVersion.VERSION_25
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
         options.compilerArgs.removeAll { it == '-proc:none' }
     }
     tasks.named('compileTestJava').configure {

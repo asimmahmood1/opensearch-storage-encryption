@@ -65,8 +65,8 @@ public class MemorySegmentPoolTests {
     }
 
     @Test
-    public void testCompatibilityConstructorIgnoresZeroing() {
-        pool = new MemorySegmentPool(4096, 1024, true);
+    public void testGcHeadroomFractionConstructor() {
+        pool = new MemorySegmentPool(4096, 1024, 0.25);
         assertNotNull(pool);
         assertEquals(1024, pool.pooledSegmentSize());
     }

@@ -29,6 +29,8 @@ public class PrefetchTracker {
     private final AtomicLong blocksCacheHit = new AtomicLong();
     private final AtomicLong prefetchTimeNs = new AtomicLong();
     private final AtomicLong executeRejections = new AtomicLong();
+    private final AtomicLong l1Hits = new AtomicLong();
+    private final AtomicLong l1Misses = new AtomicLong();
 
     private final int maxInflight;
 
@@ -167,6 +169,22 @@ public class PrefetchTracker {
         return executeRejections.get();
     }
 
+    public void recordL1Hits(long count) {
+        l1Hits.addAndGet(count);
+    }
+
+    public void recordL1Misses(long count) {
+        l1Misses.addAndGet(count);
+    }
+
+    public long getL1Hits() {
+        return l1Hits.get();
+    }
+
+    public long getL1Misses() {
+        return l1Misses.get();
+    }
+
     // Testing only
     void resetStats() {
         prefetchCalls.set(0);
@@ -176,5 +194,7 @@ public class PrefetchTracker {
         blocksCacheHit.set(0);
         prefetchTimeNs.set(0);
         executeRejections.set(0);
+        l1Hits.set(0);
+        l1Misses.set(0);
     }
 }

@@ -10,6 +10,9 @@ import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 
+import org.opensearch.index.store.block.RefCountedByteBuffer;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
+
 /**
  * Strategy interface that abstracts the open-read-close lifecycle for a single
  * I/O backend, allowing the block loader to delegate disk reads without
@@ -38,6 +41,37 @@ public interface IOBackendStrategy {
      */
     MemorySegment read(Path filePath, long offset, long length,
                        Arena arena, int blockSize) throws IOException;
+
+    /**
+     * Reads a contiguous file region and distributes data across pre-allocated
+     * buffers, each receiving CACHE_BLOCK_SIZE bytes.
+     *
+     * Default implementation: delegates to read() + MemorySegment.copy.
+     * Backends may override for zero-copy (e.g., pread on EFS).
+     *
+     * @param filePath   path to the file
+     * @param offset     starting byte offset (block-aligned)
+     * @param handles    pre-allocated pool buffer handles (one per block)
+     * @param blockSize  filesystem block size for alignment decisions
+     * @return total bytes read across all buffers
+     * @throws IOException on I/O failure
+     */
+    default long readIntoBuffers(Path filePath, long offset, RefCountedByteBuffer[] handles,
+                             int blockSize) throws IOException {
+        int cacheBlockSize = StaticConfigs.CACHE_BLOCK_SIZE;
+        long totalLength = (long) handles.length * cacheBlockSize;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment contiguous = read(filePath, offset, totalLength, arena, blockSize);
+            long bytesRead = contiguous.byteSize();
+            long copied = 0;
+            for (int i = 0; i < handles.length && copied < bytesRead; i++) {
+                long toCopy = Math.min(cacheBlockSize, bytesRead - copied);
+                MemorySegment.copy(contiguous, copied, handles[i].segment(), 0, toCopy);
+                copied += toCopy;
+            }
+            return bytesRead;
+        }
+    }
 
     /**
      * Releases any resources held by this backend (e.g., shared rings,

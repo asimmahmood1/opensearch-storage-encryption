@@ -6,6 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.function.BiConsumer;
 
 /**
  * Generic block cache interface for storing and retrieving blocks of data.
@@ -20,6 +21,25 @@ import java.nio.file.Path;
  * @opensearch.internal
  */
 public interface BlockCache<T> {
+
+    /**
+     * Callback invoked when a block is evicted from the cache.
+     * Used to notify L1 caches (RadixBlockTable) so they can clear stale entries.
+     */
+    @FunctionalInterface
+    interface EvictionListener {
+        void onEviction(Path path, long blockOffset);
+    }
+
+    /**
+     * Registers a listener that is notified when blocks are evicted from this cache.
+     * The listener is called before the evicted value is closed.
+     *
+     * @param listener the eviction listener
+     */
+    default void setEvictionListener(EvictionListener listener) {
+        // no-op by default; implementations that support eviction notification override this
+    }
 
     /**
      * Returns the block if cached, or null if absent.
@@ -97,6 +117,31 @@ public interface BlockCache<T> {
      * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
     void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+
+    /**
+     * Load missing blocks into L2 and promote to L1 via the provided callback.
+     * The callback is invoked only on actual cache misses (new loads), not L2 hits.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @param l1Promoter callback receiving (blockId, value) for each newly loaded block
+     * @throws IOException if loading fails
+     */
+    default void loadMissingBlocks(Path filePath, long startOffset, long blockCount,
+                                   BiConsumer<Long, BlockCacheValue<T>> l1Promoter) throws IOException {
+        loadMissingBlocks(filePath, startOffset, blockCount);
+    }
+
+    /**
+     * Record a prefetch L1 cache hit.
+     */
+    default void recordPrefetchL1Hit(long count) {}
+
+    /**
+     * Record a prefetch L1 cache miss.
+     */
+    default void recordPrefetchL1Miss(long count) {}
 
     /**
      * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.

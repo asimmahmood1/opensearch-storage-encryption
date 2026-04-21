@@ -43,6 +43,7 @@ public class MemorySegmentPool implements Pool<RefCountedByteBuffer>, AutoClosea
 
     private final int segmentSize;
     private final int maxSegments;
+    private final int allocationLimit;
     private final long totalMemory;
     private final AtomicInteger buffersInUse = new AtomicInteger(0);
     private final LongAdder stallCount = new LongAdder();
@@ -60,7 +61,7 @@ public class MemorySegmentPool implements Pool<RefCountedByteBuffer>, AutoClosea
         this.cacheEntriesSupplier = supplier;
     }
 
-    public MemorySegmentPool(long totalMemory, int segmentSize) {
+    public MemorySegmentPool(long totalMemory, int segmentSize, double gcHeadroomFraction) {
         if (totalMemory % segmentSize != 0) {
             throw new IllegalArgumentException("Total memory must be a multiple of segment size");
         }
@@ -71,13 +72,16 @@ public class MemorySegmentPool implements Pool<RefCountedByteBuffer>, AutoClosea
         this.totalMemory = totalMemory;
         this.segmentSize = segmentSize;
         this.maxSegments = (int) (totalMemory / segmentSize);
+        this.allocationLimit = maxSegments + (int) (maxSegments * gcHeadroomFraction);
+        LOGGER.info("MemorySegmentPool: maxSegments={}, allocationLimit={}, gcHeadroomFraction={}",
+            maxSegments, allocationLimit, gcHeadroomFraction);
         this.gcDebtMonitor = new Thread(this::gcDebtMonitorLoop, "pool-gc-debt-monitor");
         gcDebtMonitor.setDaemon(true);
         gcDebtMonitor.start();
     }
 
-    public MemorySegmentPool(long totalMemory, int segmentSize, boolean requiresZeroing) {
-        this(totalMemory, segmentSize);
+    public MemorySegmentPool(long totalMemory, int segmentSize) {
+        this(totalMemory, segmentSize, 0.50);
     }
 
     @Override
@@ -102,30 +106,30 @@ public class MemorySegmentPool implements Pool<RefCountedByteBuffer>, AutoClosea
     public RefCountedByteBuffer tryAcquire(long timeout, TimeUnit unit) throws Exception {
         if (closed) throw new IllegalStateException("Pool is closed");
 
-        // Under 150% of max — allocate directly (50% headroom for GC lag)
-        if (buffersInUse.get() < maxSegments + (maxSegments / 2)) {
-            buffersInUse.incrementAndGet();
+        // Under allocation limit — allocate directly
+        if (buffersInUse.incrementAndGet() <= allocationLimit) {
             ByteBuffer buf = ByteBuffer.allocateDirect(segmentSize).order(ByteOrder.LITTLE_ENDIAN);
             return wrapAndRegister(buf);
         }
+        buffersInUse.decrementAndGet();
 
-        // Over 150% — wait for GC to reclaim buffers, with timeout
+        // Over limit — wait for GC to reclaim buffers, with timeout
         long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
         stallCount.increment();
         while (true) {
             if (closed) throw new IllegalStateException("Pool is closed");
 
-            if (buffersInUse.get() < maxSegments + (maxSegments / 2)) {
-                buffersInUse.incrementAndGet();
+            if (buffersInUse.incrementAndGet() <= allocationLimit) {
                 ByteBuffer buf = ByteBuffer.allocateDirect(segmentSize).order(ByteOrder.LITTLE_ENDIAN);
                 return wrapAndRegister(buf);
             }
+            buffersInUse.decrementAndGet();
 
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) {
                 throw new IOException(
                     "Pool acquisition timed out after " + unit.toMillis(timeout) + "ms"
-                        + " (inUse=" + buffersInUse.get() + ", max=" + maxSegments + ", limit=" + (maxSegments + maxSegments / 2) + ")"
+                        + " (inUse=" + buffersInUse.get() + ", max=" + maxSegments + ", limit=" + allocationLimit + ")"
                 );
             }
 

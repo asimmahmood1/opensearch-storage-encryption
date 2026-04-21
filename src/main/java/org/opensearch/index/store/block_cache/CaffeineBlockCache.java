@@ -14,6 +14,8 @@ import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -46,6 +48,13 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     private final PrefetchTracker prefetchTracker;
 
     /**
+     * Shared reference to the eviction listener, set by {@link #setEvictionListener}.
+     * Read by the Caffeine removal listener (lambda in BlockCacheBuilder) to notify
+     * L1 caches when blocks are evicted.
+     */
+    private final AtomicReference<EvictionListener> evictionListenerRef;
+
+    /**
      * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch tracker.
      *
      * @param cache the underlying Caffeine cache instance
@@ -59,10 +68,35 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         long maxBlocks,
         PrefetchTracker prefetchTracker
     ) {
+        this(cache, blockLoader, maxBlocks, prefetchTracker, new AtomicReference<>());
+    }
+
+    /**
+     * Constructs a new CaffeineBlockCache with eviction listener support.
+     *
+     * @param cache the underlying Caffeine cache instance
+     * @param blockLoader the loader used to load blocks when cache misses occur
+     * @param maxBlocks the maximum number of blocks to cache
+     * @param prefetchTracker tracker for prefetch deduplication, stats, and async execution
+     * @param evictionListenerRef shared reference read by the Caffeine removal listener
+     */
+    public CaffeineBlockCache(
+        Cache<BlockCacheKey, BlockCacheValue<T>> cache,
+        BlockLoader<V> blockLoader,
+        long maxBlocks,
+        PrefetchTracker prefetchTracker,
+        AtomicReference<EvictionListener> evictionListenerRef
+    ) {
         this.cache = cache;
         this.blockLoader = blockLoader;
 	this.maxBlocks = maxBlocks;
         this.prefetchTracker = prefetchTracker;
+        this.evictionListenerRef = evictionListenerRef;
+    }
+
+    @Override
+    public void setEvictionListener(EvictionListener listener) {
+        evictionListenerRef.set(listener);
     }
 
     @Override
@@ -214,7 +248,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         try {
             prefetchTracker.execute(() -> {
                 try {
-                    loadMissingBlocksSync(filePath, startOffset, blockCount);
+                    loadMissingBlocksSync(filePath, startOffset, blockCount, null);
                 } catch (Exception e) {
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
                 }
@@ -226,7 +260,28 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         }
     }
 
-    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) {
+    @Override
+    public void loadMissingBlocks(Path filePath, long startOffset, long blockCount,
+                                  BiConsumer<Long, BlockCacheValue<T>> l1Promoter) throws IOException {
+        prefetchTracker.recordPrefetchCall(blockCount);
+        long t0 = System.nanoTime();
+        try {
+            prefetchTracker.execute(() -> {
+                try {
+                    loadMissingBlocksSync(filePath, startOffset, blockCount, l1Promoter);
+                } catch (Exception e) {
+                    LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
+                }
+            });
+        } catch (Exception e) {
+            LOGGER.warn("prefetch task rejected: path={} offset={} count={} e={}", filePath, startOffset, blockCount, e.getMessage());
+        } finally {
+            prefetchTracker.recordPrefetchTimeNs(System.nanoTime() - t0);
+        }
+    }
+
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount,
+                                       BiConsumer<Long, BlockCacheValue<T>> l1Promoter) {
         BlockCacheKey[] keys = new BlockCacheKey[(int) blockCount];
         int keyCount = 0;
         for (int i = 0; i < blockCount; i++) {
@@ -248,6 +303,9 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                         @SuppressWarnings("unchecked")
                         BlockCacheValue<T> value = (BlockCacheValue<T>) result[0];
                         loaded[0]++;
+                        if (l1Promoter != null) {
+                            l1Promoter.accept(k.offset() / CACHE_BLOCK_SIZE, value);
+                        }
                         return value;
                     } catch (Exception e) {
                         return handleLoadException(k, e);
@@ -399,6 +457,16 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                 prefetchTracker.getBlocksCacheHit(),
                 prefetchTracker.size()
             );
+    }
+
+    @Override
+    public void recordPrefetchL1Hit(long count) {
+        prefetchTracker.recordL1Hits(count);
+    }
+
+    @Override
+    public void recordPrefetchL1Miss(long count) {
+        prefetchTracker.recordL1Misses(count);
     }
 
     @Override

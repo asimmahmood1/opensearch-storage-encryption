@@ -54,6 +54,12 @@ public class StaticConfigs {
      */
     public static volatile long CACHE_BLOCK_MASK = CACHE_BLOCK_SIZE - 1;
 
+    /**
+     * Whether to populate the block cache during writes.
+     * Disable to reduce direct memory pressure during heavy indexing.
+     */
+    public static volatile boolean CACHE_ON_WRITE = false;
+
     private static final int DEFAULT_BLOCK_SIZE = 1 << DEFAULT_CACHE_BLOCK_SIZE_POWER; // 1MB
 
     private static volatile boolean initialized = false;

@@ -240,7 +240,9 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 int chunkLen = Math.min(length - offsetInBuffer, CACHE_BLOCK_SIZE - blockOffset);
 
                 // Cache plaintext data for reads
-                cacheBlockIfEligible(full, arrayOffset + offsetInBuffer, blockAlignedOffset, blockOffset, chunkLen);
+                if (StaticConfigs.CACHE_ON_WRITE) {
+                    cacheBlockIfEligible(full, arrayOffset + offsetInBuffer, blockAlignedOffset, blockOffset, chunkLen);
+                }
 
                 // Encrypt and write to disk
                 writeEncryptedChunk(data, arrayOffset + offsetInBuffer, chunkLen, absoluteOffset);
@@ -361,7 +363,9 @@ public final class BufferIOWithCaching extends OutputStreamIndexOutput {
                 super.close();
 
                 // Cache the final partial block if present (avoids disk I/O for immediate reads)
-                cacheFinalPartialBlock();
+                if (StaticConfigs.CACHE_ON_WRITE) {
+                    cacheFinalPartialBlock();
+                }
 
                 // signal the kernel to flush the file cacehe
                 // but we don't call flush aggresevley in small files

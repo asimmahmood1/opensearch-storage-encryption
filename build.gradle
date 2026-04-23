@@ -100,8 +100,7 @@ test {
     systemProperty 'tests.security.manager', 'false'
     systemProperty 'tests.jvm.argline', '--enable-native-access=ALL-UNNAMED'
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED',
-        '--enable-preview'
+        '--enable-native-access=ALL-UNNAMED'
     ]
 }
 
@@ -113,8 +112,7 @@ tasks.named('internalClusterTest').configure {
         showStandardStreams = true
     }
     jvmArgs += [
-        '--enable-native-access=ALL-UNNAMED',
-        '--enable-preview'
+        '--enable-native-access=ALL-UNNAMED'
     ]
 }
 
@@ -128,24 +126,23 @@ testClusters.yamlRestTest {
 }
 
 compileJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
     options.compilerArgs << '-Xlint:unchecked' << '-Xlint:-deprecation'
 }
 
 compileTestJava {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
 }
 
 tasks.withType(JavaCompile).configureEach {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
     options.encoding = 'UTF-8'
-    options.release = 21
+    options.release = 24
     options.compilerArgs << '-Xlint:-deprecation'
-    options.compilerArgs += "--enable-preview"
 }
 
 tasks.withType(Javadoc).configureEach {
@@ -153,8 +150,7 @@ tasks.withType(Javadoc).configureEach {
     options.charSet = 'UTF-8'
     options.addStringOption('Xdoclint:all', '-quiet')
     options.addStringOption('tag', 'opensearch.internal:a:Internal:')
-    options.addStringOption('source', '21')
-    options.addStringOption('-enable-preview', '-quiet')
+    options.addStringOption('source', '24')
     failOnError = false
 }
 
@@ -202,8 +198,8 @@ jcstress {
 // to generate META-INF/TestList, and JMH needs it for benchmark generation.
 afterEvaluate {
     tasks.named('compileJcstressJava').configure {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_24
+        targetCompatibility = JavaVersion.VERSION_24
         options.compilerArgs.removeAll { it == '-proc:none' }
     }
     tasks.named('compileTestJava').configure {

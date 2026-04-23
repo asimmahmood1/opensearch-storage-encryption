@@ -134,12 +134,14 @@ public interface BlockCache<T> {
     }
 
     /**
-     * Record a prefetch L1 cache hit.
+     * Records L1 cache hits during prefetch.
+     * @param count number of L1 hits
      */
     default void recordPrefetchL1Hit(long count) {}
 
     /**
-     * Record a prefetch L1 cache miss.
+     * Records L1 cache misses during prefetch.
+     * @param count number of L1 misses
      */
     default void recordPrefetchL1Miss(long count) {}
 

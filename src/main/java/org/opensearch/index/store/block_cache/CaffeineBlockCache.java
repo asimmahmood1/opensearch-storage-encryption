@@ -176,12 +176,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     @Override
     public void invalidate(Path filePath) {
-        Path normalized = filePath.toAbsolutePath().normalize();
         var keysToInvalidate = cache
             .asMap()
             .keySet()
             .stream()
-            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().equals(normalized))
+            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().equals(filePath))
             .toList();
 
         // invalidateAll to trigger removal listener for proper segment cleanup
@@ -193,18 +192,17 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     @Override
     public void invalidateByPathPrefix(Path directoryPath) {
-        Path normalized = directoryPath.toAbsolutePath().normalize();
         var keysToInvalidate = cache
             .asMap()
             .keySet()
             .stream()
-            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().startsWith(normalized))
+            .filter(key -> key instanceof FileBlockCacheKey directIOKey && directIOKey.filePath().startsWith(directoryPath))
             .toList();
 
         // invalidateAll to trigger removal listener for proper segment cleanup
         // note: invalidateAll doesn't effect eviction count.
         if (!keysToInvalidate.isEmpty()) {
-            LOGGER.debug("Invalidating {} cache entries for path prefix: {}", keysToInvalidate.size(), normalized);
+            LOGGER.debug("Invalidating {} cache entries for path prefix: {}", keysToInvalidate.size(), directoryPath);
             cache.invalidateAll(keysToInvalidate);
         }
     }
@@ -248,7 +246,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         try {
             prefetchTracker.execute(() -> {
                 try {
-                    loadMissingBlocksSync(filePath, startOffset, blockCount, null);
+                    loadMissingBlocksSync(filePath, startOffset, blockCount);
                 } catch (Exception e) {
                     LOGGER.error("failed to prefetch blocks: path={} offset={} count={}", filePath, startOffset, blockCount, e);
                 }
@@ -278,6 +276,10 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
         } finally {
             prefetchTracker.recordPrefetchTimeNs(System.nanoTime() - t0);
         }
+    }
+
+    private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount) {
+        loadMissingBlocksSync(filePath, startOffset, blockCount, null);
     }
 
     private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount,

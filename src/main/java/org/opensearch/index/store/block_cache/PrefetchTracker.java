@@ -9,6 +9,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+
 /**
  * Tracks prefetch deduplication state and statistics.
  * Encapsulates the in-flight dedup map, counters, and async executor for prefetch operations.
@@ -17,10 +18,11 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class PrefetchTracker {
 
+    private static volatile boolean enabled = true;
+
     private final ConcurrentHashMap<BlockCacheKey, Boolean> inflight = new ConcurrentHashMap<>();
     private final AtomicInteger inflightCount = new AtomicInteger();
     private final Executor executor;
-    private static volatile boolean enabled = true;
 
     private final AtomicLong prefetchCalls = new AtomicLong();
     private final AtomicLong blocksRequested = new AtomicLong();
@@ -113,6 +115,14 @@ public class PrefetchTracker {
         blocksLoaded.addAndGet(count);
     }
 
+    public void recordL1Hits(long count) {
+        l1Hits.addAndGet(count);
+    }
+
+    public void recordL1Misses(long count) {
+        l1Misses.addAndGet(count);
+    }
+
     public void recordCacheHits(long count) {
         blocksCacheHit.addAndGet(count);
     }
@@ -167,14 +177,6 @@ public class PrefetchTracker {
 
     public long getExecuteRejections() {
         return executeRejections.get();
-    }
-
-    public void recordL1Hits(long count) {
-        l1Hits.addAndGet(count);
-    }
-
-    public void recordL1Misses(long count) {
-        l1Misses.addAndGet(count);
     }
 
     public long getL1Hits() {

@@ -53,7 +53,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
     private static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
     private BlockCache<RefCountedByteBuffer> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable;
+    private RadixBlockTableRegistry radixBlockTableRegistry;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -65,10 +66,11 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
         StaticConfigs.init(8192);
         BLOCK_SIZE = StaticConfigs.CACHE_BLOCK_SIZE;
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        radixBlockTableRegistry = new RadixBlockTableRegistry();
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/concurrent.dat");
+        radixBlockTable = radixBlockTableRegistry.acquire(testPath);
         arena = Arena.ofAuto();
     }
 
@@ -79,8 +81,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
 
     /**
      * Tests concurrent reads from multiple threads accessing the same index input.
-     * This test validates that concurrent access to the same block doesn't cause
-     * data corruption or race conditions.
+     * Each thread clones the input per Lucene's single-thread-per-IndexInput contract.
      */
     @Test
     public void ConcurrentReadsFromSameInput() throws Exception {
@@ -116,7 +117,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
                             long offset = blockNum * BLOCK_SIZE + (i % 100);
 
                             if (offset < fileLength) {
-                                byte value = input.readByte(offset);
+                                byte value = input.clone().readByte(offset);
                                 byte expected = (byte) (blockNum + 1);
 
                                 if (value != expected) {
@@ -272,7 +273,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
                             long offset = boundaryPositions[i % boundaryPositions.length];
 
                             try {
-                                int value = input.readInt(offset);
+                                int value = input.clone().readInt(offset);
                                 // Value should be valid (non-zero for our test data)
                                 assertTrue("Read should return valid int", value >= 0);
                             } catch (Exception e) {
@@ -475,7 +476,6 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        // Mock L2 (blockCache) directly
         FileBlockCacheKey key = new FileBlockCacheKey(testPath, offset);
         when(mockCache.get(eq(key))).thenReturn(value);
         when(mockCache.getOrLoad(eq(key))).thenReturn(value);
@@ -483,7 +483,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests {
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, radixBlockTable, radixBlockTableRegistry);
     }
 
 }

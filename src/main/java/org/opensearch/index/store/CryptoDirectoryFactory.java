@@ -42,6 +42,7 @@ import org.opensearch.index.store.block_loader.FileChannelBackend;
 import org.opensearch.index.store.block_loader.DirectIOReaderUtil;
 import org.opensearch.index.store.block_loader.IOBackendStrategy;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 
 import org.opensearch.index.store.cipher.EncryptionMetadataCacheRegistry;
@@ -102,6 +103,11 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
      * Lock for thread-safe initialization of shared resources.
      */
     private static final Object initLock = new Object();
+
+    /**
+     * Shared node-level RadixBlockTable registry for L1 cache lifecycle management.
+     */
+    private static volatile RadixBlockTableRegistry sharedRadixBlockTableRegistry;
 
     /**
      * Resolver for obtaining default encryption context from cluster metadata.
@@ -589,6 +595,19 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
         // All shards/directories share a single queue and executor pool for better resource utilization
         Worker readaheadWorker = resources.getSharedReadaheadWorker();
 
+        // Initialize shared RadixBlockTableRegistry once and wire eviction listener
+        // to the shared Caffeine cache. All directories share one registry because
+        // the ConcurrentHashMap keys by absolute file path — no conflicts across directories.
+        if (sharedRadixBlockTableRegistry == null) {
+            synchronized (CryptoDirectoryFactory.class) {
+                if (sharedRadixBlockTableRegistry == null) {
+                    RadixBlockTableRegistry registry = new RadixBlockTableRegistry();
+                    sharedCaffeineCache.setEvictionListener(registry::onEviction);
+                    sharedRadixBlockTableRegistry = registry;
+                }
+            }
+        }
+
         return new BufferPoolDirectory(
             location,
             lockFactory,
@@ -598,7 +617,8 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
             directoryCache,
             loader,
             readaheadWorker,
-            encryptionMetadataCache
+            encryptionMetadataCache,
+            sharedRadixBlockTableRegistry
         );
     }
 

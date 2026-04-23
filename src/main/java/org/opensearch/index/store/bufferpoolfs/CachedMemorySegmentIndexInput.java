@@ -14,6 +14,7 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.util.function.BiConsumer;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -41,9 +42,10 @@ import org.opensearch.index.store.read_ahead.ReadaheadManager;
  * <li>Slice support with offset management</li>
  * </ul>
  * 
- * <p>The class uses a {@link BlockSlotTinyCache} for L1 caching and falls back to
- * the main {@link BlockCache} for cache misses. Memory segments are pinned during
- * access to prevent eviction races and unpinned when no longer needed.
+ * <p>The class uses a {@link RadixBlockTable} for L1 caching and falls back to
+ * the main {@link BlockCache} (Caffeine L2) for cache misses.
+ *
+ * <p>The L1 cache provides zero-collision, lock-free lookups via two plain array reads.
  * 
  * @opensearch.internal
  */
@@ -79,15 +81,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     // Cached offset from last getCacheBlockWithOffset call (avoid BlockAccess allocation)
     private int lastOffsetInBlock;
 
-    private final L1BlockCache l1Cache;
+    // --- JIT-friendly fast-path fields ---
+    // Pre-computed boundary: the position (relative to this input) where the current block ends.
+    private long currentBlockEnd = 0L;
+    // Cached MemorySegment for direct access without getCacheBlockWithOffset
+    private MemorySegment currentSegment;
+    // Block-aligned file offset of the current block (used to compute offset within segment)
+    private long currentBlockStart;
+    private long currentBlockStartRelative; // = currentBlockStart - absoluteBaseOffset (input-relative)
 
-    public L1BlockCache getL1Cache() {
-        return l1Cache;
-    }
+    private final RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable;
+    private final RadixBlockTableRegistry radixBlockTableRegistry; // shared by master and slices; only master calls release()
 
     // Safe because IndexInput instances are not thread-safe per Lucene contract -
     // each thread must use its own clone().
-    private final BlockSlotTinyCache.CacheHitHolder cacheHitHolder = new BlockSlotTinyCache.CacheHitHolder();
+    private boolean lastAccessWasCacheHit;
 
     /**
      * Creates a new CachedMemorySegmentIndexInput instance.
@@ -98,7 +106,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      * @param blockCache the main block cache for storing memory segments
      * @param readaheadManager manager for read-ahead operations
      * @param readaheadContext context for read-ahead policy decisions
-     * @param l1Cache L1 cache for recently accessed blocks
+     * @param radixBlockTable L1 cache for recently accessed blocks
+     * @param radixBlockTableRegistry registry for lifecycle management (release on close)
      * @return a new CachedMemorySegmentIndexInput instance
      */
     public static CachedMemorySegmentIndexInput newInstance(
@@ -108,7 +117,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         BlockCache<RefCountedByteBuffer> blockCache,
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
-        L1BlockCache l1Cache
+        RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable,
+        RadixBlockTableRegistry radixBlockTableRegistry
     ) {
         CachedMemorySegmentIndexInput input = new CachedMemorySegmentIndexInput(
             resourceDescription,
@@ -119,7 +129,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             false,
-            l1Cache
+            radixBlockTable,
+            radixBlockTableRegistry
         );
         try {
             input.seek(0L);
@@ -138,18 +149,20 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         ReadaheadManager readaheadManager,
         ReadaheadContext readaheadContext,
         boolean isSlice,
-        L1BlockCache l1Cache
+        RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable,
+        RadixBlockTableRegistry radixBlockTableRegistry
     ) {
         super(resourceDescription);
-        this.path = path;
-        this.pathHash = path.hashCode();
+        this.path = path.toAbsolutePath().normalize();
+        this.pathHash = this.path.hashCode();
         this.absoluteBaseOffset = absoluteBaseOffset;
         this.length = length;
         this.blockCache = blockCache;
         this.readaheadManager = readaheadManager;
         this.readaheadContext = readaheadContext;
         this.isSlice = isSlice;
-        this.l1Cache = l1Cache;
+        this.radixBlockTable = radixBlockTable;
+        this.radixBlockTableRegistry = radixBlockTableRegistry;
     }
 
     void ensureOpen() {
@@ -185,8 +198,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long blockOffset = fileOffset & ~CACHE_BLOCK_MASK;
         lastOffsetInBlock = (int) (fileOffset - blockOffset);
 
+        // Fast path: reuse current block if still valid.
         if (blockOffset == currentBlockOffset && currentBlock != null) {
-            return currentBlock.value().segment();
+            return currentSegment;
         }
         return acquireCacheBlockOnMiss(blockOffset);
     }
@@ -196,8 +210,41 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
      * small enough for JIT inlining.
      */
     private MemorySegment acquireCacheBlockOnMiss(long blockOffset) throws IOException {
-        final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
-        boolean wasCacheHit = false;
+        lastAccessWasCacheHit = false;
+
+        final BlockCacheValue<RefCountedByteBuffer> cacheValue = acquireBlock(blockOffset);
+
+        currentBlockOffset = blockOffset;
+        currentBlock = cacheValue;
+
+        // Update JIT fast-path fields
+        final MemorySegment seg = cacheValue.value().segment();
+        currentSegment = seg;
+        currentBlockStart = blockOffset;
+        currentBlockStartRelative = blockOffset - absoluteBaseOffset;
+        currentBlockEnd = currentBlockStartRelative + seg.byteSize();
+
+        // Notify readahead manager of access pattern
+        if (readaheadContext != null) {
+            readaheadContext.onAccess(blockOffset, lastAccessWasCacheHit);
+        }
+
+        return seg;
+    }
+
+    /**
+     * Acquires a block for the given block offset, checking L1 (RadixBlockTable)
+     * first, then falling back to L2 (Caffeine), then loading from disk.
+     *
+     * <p>L1 lookup is two plain array reads with no synchronization. On L1 miss,
+     * falls through to L2 and publishes back to L1.
+     *
+     * @param blockOffset the block-aligned file offset
+     * @return a BlockCacheValue for the block
+     * @throws IOException if the block cannot be acquired after max attempts
+     */
+    private BlockCacheValue<RefCountedByteBuffer> acquireBlock(long blockOffset) throws IOException {
+        final long blockId = blockOffset >>> CACHE_BLOCK_SIZE_POWER;
 
         // Update working set estimator for HLL-based cache sizing
         try {
@@ -206,40 +253,115 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             LOGGER.warn("Failed to update WorkingSetEstimator for block offset {}", blockOffset, e);
         }
 
-        BlockCacheValue<RefCountedByteBuffer> cacheValue = blockCache.get(key);
-        if (cacheValue != null) {
-            wasCacheHit = true;
-        } else {
-            cacheValue = blockCache.getOrLoad(key);
+        // ---- L1 lookup: two plain array reads, no fences, no CAS ----
+        BlockCacheValue<RefCountedByteBuffer> entry = radixBlockTable.get(blockId);
+        if (entry != null) {
+            lastAccessWasCacheHit = true;
+            if (radixBlockTableRegistry != null) radixBlockTableRegistry.recordHit();
+            // Damp signal: every 4096th L1 hit, touch L2 so Caffeine sees access frequency
+            if ((++radixBlockTable.accessCounter & RadixBlockTable.SAMPLE_MASK) == 0) {
+                blockCache.get(new FileBlockCacheKey(path, blockOffset));
+            }
+            return entry;
         }
-        if (cacheValue == null) {
-            throw new IOException("Failed to acquire cache value for block at offset " + blockOffset);
+        if (radixBlockTableRegistry != null) radixBlockTableRegistry.recordMiss();
+        // ---- L2 lookup + disk load ----
+        final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
+        // Try L2 hit
+        BlockCacheValue<RefCountedByteBuffer> v = blockCache.get(key);
+        if (v != null) {
+            radixBlockTable.put(blockId, v);
+            lastAccessWasCacheHit = true;
+            return v;
         }
-
-        currentBlockOffset = blockOffset;
-        currentBlock = cacheValue;
-
-        if (readaheadContext != null) {
-            readaheadContext.onAccess(blockOffset, wasCacheHit);
+        // L2 miss — load from disk (deduped by Caffeine)
+        BlockCacheValue<RefCountedByteBuffer> loaded = blockCache.getOrLoad(key);
+        if (loaded != null) {
+            radixBlockTable.put(blockId, loaded);
+            lastAccessWasCacheHit = false;
+            return loaded;
         }
+        throw new IOException("Unable to acquire block for offset " + blockOffset);
+    }
 
-        return cacheValue.value().segment();
+    /**
+     * Slow path for sequential reads — called only at block boundaries (~1 in CACHE_BLOCK_SIZE calls).
+     * Kept as a separate method so the JIT can keep readByte/readShort/readInt/readLong tiny.
+     */
+    private byte readByteSlow(long pos) throws IOException {
+        try {
+            final MemorySegment seg = getCacheBlockWithOffset(pos);
+            final byte v = seg.get(LAYOUT_BYTE, lastOffsetInBlock);
+            curPosition = pos + 1;
+            return v;
+        } catch (IndexOutOfBoundsException ioobe) {
+            throw handlePositionalIOOBE(ioobe, "read", pos);
+        } catch (NullPointerException | IllegalStateException e) {
+            throw alreadyClosed(e);
+        }
+    }
+
+    private short readShortSlow(long pos) throws IOException {
+        try {
+            final MemorySegment seg = getCacheBlockWithOffset(pos);
+            final int off = lastOffsetInBlock;
+            if (off + Short.BYTES > seg.byteSize()) {
+                return super.readShort();
+            }
+            final short v = seg.get(LAYOUT_LE_SHORT, off);
+            curPosition = pos + Short.BYTES;
+            return v;
+        } catch (IndexOutOfBoundsException ioobe) {
+            throw handlePositionalIOOBE(ioobe, "read", pos);
+        } catch (NullPointerException | IllegalStateException e) {
+            throw alreadyClosed(e);
+        }
+    }
+
+    private int readIntSlow(long pos) throws IOException {
+        try {
+            final MemorySegment seg = getCacheBlockWithOffset(pos);
+            final int off = lastOffsetInBlock;
+            if (off + Integer.BYTES > seg.byteSize()) {
+                return super.readInt();
+            }
+            final int v = seg.get(LAYOUT_LE_INT, off);
+            curPosition = pos + Integer.BYTES;
+            return v;
+        } catch (IndexOutOfBoundsException ioobe) {
+            throw handlePositionalIOOBE(ioobe, "read", pos);
+        } catch (NullPointerException | IllegalStateException e) {
+            throw alreadyClosed(e);
+        }
+    }
+
+    private long readLongSlow(long pos) throws IOException {
+        try {
+            final MemorySegment seg = getCacheBlockWithOffset(pos);
+            final int off = lastOffsetInBlock;
+            if (off + Long.BYTES > seg.byteSize()) {
+                return super.readLong();
+            }
+            final long v = seg.get(LAYOUT_LE_LONG, off);
+            curPosition = pos + Long.BYTES;
+            return v;
+        } catch (IndexOutOfBoundsException ioobe) {
+            throw handlePositionalIOOBE(ioobe, "read", pos);
+        } catch (NullPointerException | IllegalStateException e) {
+            throw alreadyClosed(e);
+        }
     }
 
     @Override
     public final byte readByte() throws IOException {
-        // Use direct field access instead of virtual call
-        final long currentPos = curPosition;
-        try {
-            final MemorySegment segment = getCacheBlockWithOffset(currentPos);
-            final byte v = segment.get(LAYOUT_BYTE, lastOffsetInBlock);
-            curPosition = currentPos + 1;
+        final long pos = curPosition;
+        if (pos >= currentBlockStartRelative && pos < currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            final byte v = currentSegment.get(LAYOUT_BYTE, off);
+            curPosition = pos + 1;
             return v;
-        } catch (IndexOutOfBoundsException ioobe) {
-            throw handlePositionalIOOBE(ioobe, "read", currentPos);
-        } catch (NullPointerException | IllegalStateException e) {
-            throw alreadyClosed(e);
         }
+        return readByteSlow(pos);
     }
 
     @Override
@@ -373,72 +495,38 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public final short readShort() throws IOException {
-        final long currentPos = getFilePointer();
-        try {
-            final MemorySegment segment;
-            final int offsetInBlock;
-
-            segment = getCacheBlockWithOffset(currentPos);
-            offsetInBlock = lastOffsetInBlock;
-            if (offsetInBlock + Short.BYTES > segment.byteSize()) {
-                return super.readShort();
-            }
-
-            final short v = segment.get(LAYOUT_LE_SHORT, offsetInBlock);
-            curPosition += Short.BYTES;
+        final long pos = curPosition;
+        if (pos >= currentBlockStartRelative && pos + Short.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            final short v = currentSegment.get(LAYOUT_LE_SHORT, off);
+            curPosition = pos + Short.BYTES;
             return v;
-        } catch (IndexOutOfBoundsException ioobe) {
-            throw handlePositionalIOOBE(ioobe, "read", currentPos);
-        } catch (NullPointerException | IllegalStateException e) {
-            throw alreadyClosed(e);
         }
+        return readShortSlow(pos);
     }
 
     @Override
     public final int readInt() throws IOException {
-        final long currentPos = curPosition;
-        try {
-            final MemorySegment segment;
-            final int offsetInBlock;
-
-            segment = getCacheBlockWithOffset(currentPos);
-            offsetInBlock = lastOffsetInBlock;
-
-            // Fast path: check if we have enough bytes in current block
-            if (offsetInBlock <= segment.byteSize() - Integer.BYTES) {
-                final int v = segment.get(LAYOUT_LE_INT, offsetInBlock);
-                curPosition = currentPos + Integer.BYTES; // Direct assignment, no +=
-                return v;
-            }
-            return super.readInt();
-        } catch (IndexOutOfBoundsException ioobe) {
-            throw handlePositionalIOOBE(ioobe, "read", currentPos);
-        } catch (NullPointerException | IllegalStateException e) {
-            throw alreadyClosed(e);
+        final long pos = curPosition;
+        if (pos >= currentBlockStartRelative && pos + Integer.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            final int v = currentSegment.get(LAYOUT_LE_INT, off);
+            curPosition = pos + Integer.BYTES;
+            return v;
         }
+        return readIntSlow(pos);
     }
 
     @Override
     public final long readLong() throws IOException {
-        final long currentPos = curPosition;
-        try {
-            final MemorySegment segment;
-            final int offsetInBlock;
-
-            segment = getCacheBlockWithOffset(currentPos);
-            offsetInBlock = lastOffsetInBlock;
-
-            if (offsetInBlock <= segment.byteSize() - Long.BYTES) {
-                final long v = segment.get(LAYOUT_LE_LONG, offsetInBlock);
-                curPosition = currentPos + Long.BYTES;
-                return v;
-            }
-            return super.readLong();
-        } catch (IndexOutOfBoundsException ioobe) {
-            throw handlePositionalIOOBE(ioobe, "read", currentPos);
-        } catch (NullPointerException | IllegalStateException e) {
-            throw alreadyClosed(e);
+        final long pos = curPosition;
+        if (pos >= currentBlockStartRelative && pos + Long.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            final long v = currentSegment.get(LAYOUT_LE_LONG, off);
+            curPosition = pos + Long.BYTES;
+            return v;
         }
+        return readLongSlow(pos);
     }
 
     @Override
@@ -520,10 +608,12 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (pos < 0 || pos >= length) {
             return 0;
         }
-
+        if (pos >= currentBlockStartRelative && pos < currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            return currentSegment.get(LAYOUT_BYTE, off);
+        }
         try {
-            final MemorySegment segment;
-            segment = getCacheBlockWithOffset(pos);
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
             return segment.get(LAYOUT_BYTE, lastOffsetInBlock);
         } catch (IndexOutOfBoundsException ioobe) {
             throw handlePositionalIOOBE(ioobe, "read", pos);
@@ -534,16 +624,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public short readShort(long pos) throws IOException {
+        if (pos >= currentBlockStartRelative && pos + Short.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            return currentSegment.get(LAYOUT_LE_SHORT, off);
+        }
         try {
-            final MemorySegment segment;
-            final int offsetInBlock;
-
-            segment = getCacheBlockWithOffset(pos);
-            offsetInBlock = lastOffsetInBlock;
-
-            // Check if the short spans beyond the current cache block
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            final int offsetInBlock = lastOffsetInBlock;
             if (offsetInBlock + Short.BYTES > segment.byteSize()) {
-                // Read spans cache block boundary, delegate to sequential readShort()
                 long savedPos = getFilePointer();
                 try {
                     seek(pos);
@@ -562,16 +650,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public int readInt(long pos) throws IOException {
+        if (pos >= currentBlockStartRelative && pos + Integer.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            return currentSegment.get(LAYOUT_LE_INT, off);
+        }
         try {
-            final MemorySegment segment;
-            final int offsetInBlock;
-
-            segment = getCacheBlockWithOffset(pos);
-            offsetInBlock = lastOffsetInBlock;
-
-            // Check if the int spans beyond the current cache block
+            final MemorySegment segment = getCacheBlockWithOffset(pos);
+            final int offsetInBlock = lastOffsetInBlock;
             if (offsetInBlock + Integer.BYTES > segment.byteSize()) {
-                // Read spans cache block boundary, delegate to sequential readInt()
                 long savedPos = getFilePointer();
                 try {
                     seek(pos);
@@ -590,13 +676,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
 
     @Override
     public long readLong(long pos) throws IOException {
+        if (pos >= currentBlockStartRelative && pos + Long.BYTES <= currentBlockEnd) {
+            final long off = absoluteBaseOffset + pos - currentBlockStart;
+            return currentSegment.get(LAYOUT_LE_LONG, off);
+        }
         try {
             final MemorySegment segment = getCacheBlockWithOffset(pos);
             final int offsetInBlock = lastOffsetInBlock;
-
-            // Check if the long spans beyond the current cache block
             if (offsetInBlock + Long.BYTES > segment.byteSize()) {
-                // Read spans cache block boundary, delegate to sequential readLong()
                 long savedPos = getFilePointer();
                 try {
                     seek(pos);
@@ -674,7 +761,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             readaheadManager,
             readaheadContext,
             true,
-            l1Cache
+            radixBlockTable,
+            radixBlockTableRegistry // slices share the table and registry for metrics, but don't call release()
         );
 
         try {
@@ -695,11 +783,39 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long endFileOffset = absoluteBaseOffset + offset + length;
         final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
         final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
+        final long startBlockId = startBlockOffset >>> CACHE_BLOCK_SIZE_POWER;
 
-        // Most prefetch will be for block size 1, do a quick look up
-        // TODO: tune this for large prefetch (e.g. vectors)
-        if (blockCount == 1 && l1Cache.contains(startBlockOffset)) {
-            return;
+        if (blockCount == 1) {
+            if (radixBlockTable.get(startBlockId) != null) {
+                blockCache.recordPrefetchL1Hit(1);
+                return;
+            }
+            blockCache.recordPrefetchL1Miss(1);
+        } else {
+            // Find the first missing block in L1 cache. Sequential blockId access is
+            // branch-predictor and CPU-prefetch friendly — RadixBlockTable.get() is two
+            // plain array loads, no locks, no CAS.
+            long firstMissing = blockCount; // sentinel: all present
+            for (long i = 0; i < blockCount; i++) {
+                if (radixBlockTable.get(startBlockId + i) == null) {
+                    firstMissing = i;
+                    break;
+                }
+            }
+            if (firstMissing == blockCount) {
+                blockCache.recordPrefetchL1Hit(blockCount);
+                return;
+            }
+            if (firstMissing > 0) {
+                blockCache.recordPrefetchL1Hit(firstMissing);
+                blockCache.recordPrefetchL1Miss(blockCount - firstMissing);
+                // Skip leading cached blocks — start loading from the first miss
+                blockCache.loadMissingBlocks(path,
+                    startBlockOffset + (firstMissing << CACHE_BLOCK_SIZE_POWER),
+                    blockCount - firstMissing);
+                return;
+            }
+            blockCache.recordPrefetchL1Miss(blockCount);
         }
 
         blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
@@ -718,20 +834,21 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         // Release current block reference — GC handles cleanup
         currentBlock = null;
         currentBlockOffset = -1;
+        currentBlockEnd = 0L;
+        currentSegment = null;
+        currentBlockStart = 0L;
+        currentBlockStartRelative = 0L;
 
         if (!isSlice) {
             // Master instance cleanup
-            assert !isSlice : "Master instance should not be marked as slice";
-
-            if (l1Cache != null) {
-                l1Cache.clear();
+            if (radixBlockTableRegistry != null) {
+                // Release our ref in the registry; when refCount reaches 0
+                // the table is cleared and removed from the registry.
+                radixBlockTableRegistry.release(path);
             }
 
             readaheadManager.close();
-        } else {
-            // Slice instance cleanup
-            assert isSlice : "Slice instance should be marked as slice";
-            // Slices share cache and readahead manager, so don't close them
         }
+        // Slices share cache, readahead manager, and radix table, so don't close them
     }
 }

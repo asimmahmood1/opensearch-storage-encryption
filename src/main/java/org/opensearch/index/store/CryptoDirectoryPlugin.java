@@ -36,6 +36,7 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
@@ -88,6 +89,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
     private NodeEnvironment nodeEnvironment;
     private final boolean enabled;
+    private volatile boolean clearCacheBeforeSearch;
 
     // Static storage for remote store parameters (accessible by CryptoEngineFactory)
     private static Supplier<RepositoriesService> repositoriesServiceSupplier;
@@ -155,7 +157,8 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
-                CryptoDirectoryFactory.BUFFERPOOL_FLUSH_ENABLED_SETTING
+                CryptoDirectoryFactory.BUFFERPOOL_FLUSH_ENABLED_SETTING,
+                CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING
             );
         return settings;
     }
@@ -244,6 +247,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
 
         // Initialize I/O backend setting and register dynamic update listener
         CryptoDirectoryFactory.initializeIOBackendSetting(clusterService);
+
+        // Wire clear-cache-before-search benchmark setting
+        this.clearCacheBeforeSearch = CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING.get(environment.settings());
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING,
+            value -> this.clearCacheBeforeSearch = value
+        );
 
         // Create HLL working set estimator scheduler (starts when enabled via dynamic config)
         WorkingSetEstimatorScheduler hllScheduler =
@@ -341,6 +351,22 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                         ShardKeyResolverRegistry.removeResolver(index.getUUID(), i, index.getName());
                         NodeLevelKeyCache.getInstance().evict(index.getUUID(), i, index.getName());
                     }
+                }
+            });
+
+            // Cold-cache benchmark hook: clears L1+L2 AFTER each query (async so clear time is not measured by OSB)
+            indexModule.addSearchOperationListener(new org.opensearch.index.shard.SearchOperationListener() {
+                @Override
+                public void onQueryPhase(org.opensearch.search.internal.SearchContext searchContext, long tookInNanos) {
+                    if (!clearCacheBeforeSearch) return;
+                    java.util.concurrent.ForkJoinPool.commonPool().execute(() -> {
+                        long start = System.nanoTime();
+                        RadixBlockTableRegistry l1 = CryptoDirectoryFactory.getSharedRadixBlockTableRegistry();
+                        if (l1 != null) l1.clearContents();
+                        BlockCache<?> l2 = CryptoDirectoryFactory.getSharedBlockCache();
+                        if (l2 != null) l2.clearSafely();
+                        log.info("Cleared L1+L2 caches after query in {}ms", (System.nanoTime() - start) / 1_000_000.0);
+                    });
                 }
             });
         // }

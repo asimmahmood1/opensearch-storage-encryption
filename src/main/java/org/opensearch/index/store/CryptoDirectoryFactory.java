@@ -243,6 +243,16 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     );
 
     /**
+     * When enabled, clears L1+L2 block caches after each query (for cold-cache benchmarking).
+     */
+    public static final Setting<Boolean> CLEAR_CACHE_BEFORE_SEARCH_SETTING = Setting.boolSetting(
+        "plugins.crypto.clear_cache_before_search",
+        false,
+        Property.NodeScope,
+        Property.Dynamic
+    );
+
+    /**
      * Get default encryption context from cluster metadata using the configured resolver.
      *
      * @return the encryption context from cluster settings, or empty string if not found
@@ -713,9 +723,14 @@ public class CryptoDirectoryFactory implements IndexStorePlugin.DirectoryFactory
     }
 
     /**
-     * Get the shared block cache instance.
+     * Get the shared RadixBlockTableRegistry (L1 cache) instance.
      * This can be used for cache invalidation when indices or shards are deleted.
-     *
+     */
+    public static RadixBlockTableRegistry getSharedRadixBlockTableRegistry() {
+        return sharedRadixBlockTableRegistry;
+    }
+
+    /**
      * @return the shared block cache, or null if not initialized
      */
     public static BlockCache<?> getSharedBlockCache() {

@@ -7,7 +7,6 @@ package org.opensearch.index.store.block_cache;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 
@@ -25,16 +24,16 @@ public class PrefetchTracker {
     private final AtomicInteger inflightCount = new AtomicInteger();
     private final Executor executor;
 
-    private final AtomicLong prefetchCalls = new AtomicLong();
-    private final AtomicLong blocksRequested = new AtomicLong();
-    private final AtomicLong blocksLoaded = new AtomicLong();
-    private final AtomicLong blocksDeduped = new AtomicLong();
-    private final AtomicLong blocksCacheHit = new AtomicLong();
-    private final AtomicLong prefetchTimeNs = new AtomicLong();
-    private final AtomicLong executeRejections = new AtomicLong();
-    private final AtomicLong l1Hits = new AtomicLong();
-    private final AtomicLong l1Misses = new AtomicLong();
-    private final AtomicLong l1Promotions = new AtomicLong();
+    private final LongAdder prefetchCalls = new LongAdder();
+    private final LongAdder blocksRequested = new LongAdder();
+    private final LongAdder blocksLoaded = new LongAdder();
+    private final LongAdder blocksDeduped = new LongAdder();
+    private final LongAdder blocksCacheHit = new LongAdder();
+    private final LongAdder prefetchTimeNs = new LongAdder();
+    private final LongAdder executeRejections = new LongAdder();
+    private final LongAdder l1Hits = new LongAdder();
+    private final LongAdder l1Misses = new LongAdder();
+    private final LongAdder l1Promotions = new LongAdder();
     private final LongAdder leadHits = new LongAdder();
     private final LongAdder leadMisses = new LongAdder();
     private final ConcurrentHashMap<BlockCacheKey, Boolean> completed = new ConcurrentHashMap<>();
@@ -67,7 +66,7 @@ public class PrefetchTracker {
             return;
         }
         if (inflightCount.get() > maxInflight) {
-            executeRejections.incrementAndGet();
+            executeRejections.increment();
             return;
         }
         executor.execute(task);
@@ -84,7 +83,7 @@ public class PrefetchTracker {
             inflightCount.incrementAndGet();
             return true;
         }
-        blocksDeduped.incrementAndGet();
+        blocksDeduped.increment();
         return false;
     }
 
@@ -113,42 +112,42 @@ public class PrefetchTracker {
     }
 
     public void recordPrefetchCall(long blockCount) {
-        prefetchCalls.incrementAndGet();
-        blocksRequested.addAndGet(blockCount);
+        prefetchCalls.increment();
+        blocksRequested.add(blockCount);
     }
 
     public void recordPrefetchTimeNs(long nanos) {
-        prefetchTimeNs.addAndGet(nanos);
+        prefetchTimeNs.add(nanos);
     }
 
     public void recordBlocksLoaded(long count) {
-        blocksLoaded.addAndGet(count);
+        blocksLoaded.add(count);
     }
 
     public void recordL1Hits(long count) {
-        l1Hits.addAndGet(count);
+        l1Hits.add(count);
     }
 
     public void recordL1Misses(long count) {
-        l1Misses.addAndGet(count);
+        l1Misses.add(count);
     }
 
     public void recordL1Promotion() {
-        l1Promotions.incrementAndGet();
+        l1Promotions.increment();
     }
 
     public void recordCacheHits(long count) {
-        blocksCacheHit.addAndGet(count);
+        blocksCacheHit.add(count);
     }
 
     public String stats() {
-        long calls = prefetchCalls.get();
-        long requested = blocksRequested.get();
-        long loaded = blocksLoaded.get();
-        long deduped = blocksDeduped.get();
-        long cacheHit = blocksCacheHit.get();
-        long timeMs = prefetchTimeNs.get() / 1_000_000;
-        long rejections = executeRejections.get();
+        long calls = prefetchCalls.sum();
+        long requested = blocksRequested.sum();
+        long loaded = blocksLoaded.sum();
+        long deduped = blocksDeduped.sum();
+        long cacheHit = blocksCacheHit.sum();
+        long timeMs = prefetchTimeNs.sum() / 1_000_000;
+        long rejections = executeRejections.sum();
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
@@ -168,43 +167,43 @@ public class PrefetchTracker {
     }
 
     public long getCalls() {
-        return prefetchCalls.get();
+        return prefetchCalls.sum();
     }
 
     public long getBlocksRequested() {
-        return blocksRequested.get();
+        return blocksRequested.sum();
     }
 
     public long getBlocksLoaded() {
-        return blocksLoaded.get();
+        return blocksLoaded.sum();
     }
 
     public long getBlocksDeduped() {
-        return blocksDeduped.get();
+        return blocksDeduped.sum();
     }
 
     public long getBlocksCacheHit() {
-        return blocksCacheHit.get();
+        return blocksCacheHit.sum();
     }
 
     public long getPrefetchTimeNs() {
-        return prefetchTimeNs.get();
+        return prefetchTimeNs.sum();
     }
 
     public long getExecuteRejections() {
-        return executeRejections.get();
+        return executeRejections.sum();
     }
 
     public long getL1Hits() {
-        return l1Hits.get();
+        return l1Hits.sum();
     }
 
     public long getL1Misses() {
-        return l1Misses.get();
+        return l1Misses.sum();
     }
 
     public long getL1Promotions() {
-        return l1Promotions.get();
+        return l1Promotions.sum();
     }
 
     /** Mark a block as successfully loaded by prefetch. */
@@ -236,16 +235,16 @@ public class PrefetchTracker {
 
     // Testing only
     void resetStats() {
-        prefetchCalls.set(0);
-        blocksRequested.set(0);
-        blocksLoaded.set(0);
-        blocksDeduped.set(0);
-        blocksCacheHit.set(0);
-        prefetchTimeNs.set(0);
-        executeRejections.set(0);
-        l1Hits.set(0);
-        l1Misses.set(0);
-        l1Promotions.set(0);
+        prefetchCalls.reset();
+        blocksRequested.reset();
+        blocksLoaded.reset();
+        blocksDeduped.reset();
+        blocksCacheHit.reset();
+        prefetchTimeNs.reset();
+        executeRejections.reset();
+        l1Hits.reset();
+        l1Misses.reset();
+        l1Promotions.reset();
         leadHits.reset();
         leadMisses.reset();
         completed.clear();

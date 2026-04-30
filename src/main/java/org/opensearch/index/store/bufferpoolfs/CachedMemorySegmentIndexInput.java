@@ -258,6 +258,7 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (entry != null) {
             lastAccessWasCacheHit = true;
             if (radixBlockTableRegistry != null) radixBlockTableRegistry.recordHit();
+            blockCache.checkPrefetchLeadHit(path, blockOffset);
             // Damp signal: every 4096th L1 hit, touch L2 so Caffeine sees access frequency
             if ((++radixBlockTable.accessCounter & RadixBlockTable.SAMPLE_MASK) == 0) {
                 blockCache.get(new FileBlockCacheKey(path, blockOffset));
@@ -265,6 +266,8 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
             return entry;
         }
         if (radixBlockTableRegistry != null) radixBlockTableRegistry.recordMiss();
+        // Check if prefetch was supposed to have this block ready but hasn't finished
+        blockCache.checkPrefetchLeadMiss(path, blockOffset);
         // ---- L2 lookup + disk load ----
         final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
         // Try L2 hit
@@ -812,13 +815,14 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
                 // Skip leading cached blocks — start loading from the first miss
                 blockCache.loadMissingBlocks(path,
                     startBlockOffset + (firstMissing << CACHE_BLOCK_SIZE_POWER),
-                    blockCount - firstMissing);
+                    blockCount - firstMissing,
+                    radixBlockTable::put);
                 return;
             }
             blockCache.recordPrefetchL1Miss(blockCount);
         }
 
-        blockCache.loadMissingBlocks(path, startBlockOffset, blockCount);
+        blockCache.loadMissingBlocks(path, startBlockOffset, blockCount, radixBlockTable::put);
     }
 
     @Override

@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 
 /**
@@ -33,6 +34,10 @@ public class PrefetchTracker {
     private final AtomicLong executeRejections = new AtomicLong();
     private final AtomicLong l1Hits = new AtomicLong();
     private final AtomicLong l1Misses = new AtomicLong();
+    private final AtomicLong l1Promotions = new AtomicLong();
+    private final LongAdder leadHits = new LongAdder();
+    private final LongAdder leadMisses = new LongAdder();
+    private final ConcurrentHashMap<BlockCacheKey, Boolean> completed = new ConcurrentHashMap<>();
 
     private final int maxInflight;
 
@@ -89,6 +94,11 @@ public class PrefetchTracker {
         }
     }
 
+    /** Number of completed entries awaiting consumption by checkLeadHit. */
+    public int completedSize() {
+        return completed.size();
+    }
+
     public int size() {
         return inflightCount.get();
     }
@@ -123,6 +133,10 @@ public class PrefetchTracker {
         l1Misses.addAndGet(count);
     }
 
+    public void recordL1Promotion() {
+        l1Promotions.incrementAndGet();
+    }
+
     public void recordCacheHits(long count) {
         blocksCacheHit.addAndGet(count);
     }
@@ -138,7 +152,7 @@ public class PrefetchTracker {
         double loadRatio = requested > 0 ? (100.0 * loaded / requested) : 0;
         return String
             .format(
-                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, loadRatio=%.2f%%, timeMs=%d, inflight=%d, rejections=%d]",
+                "Prefetch[calls=%d, requested=%d, loaded=%d, deduped=%d, cacheHit=%d, loadRatio=%.2f%%, timeMs=%d, inflight=%d, rejections=%d, leadHits=%d, leadMisses=%d]",
                 calls,
                 requested,
                 loaded,
@@ -147,7 +161,9 @@ public class PrefetchTracker {
                 loadRatio,
                 timeMs,
                 inflight.size(),
-                rejections
+                rejections,
+                leadHits.sum(),
+                leadMisses.sum()
             );
     }
 
@@ -187,6 +203,37 @@ public class PrefetchTracker {
         return l1Misses.get();
     }
 
+    public long getL1Promotions() {
+        return l1Promotions.get();
+    }
+
+    /** Mark a block as successfully loaded by prefetch. */
+    public void markCompleted(BlockCacheKey key) {
+        completed.put(key, Boolean.TRUE);
+    }
+
+    /** Check and consume a lead hit: acquireBlock found block in L1 that prefetch loaded. */
+    public boolean checkLeadHit(BlockCacheKey key) {
+        if (completed.remove(key) != null) {
+            leadHits.increment();
+            return true;
+        }
+        return false;
+    }
+
+    /** Check if a block is currently being prefetched (in-flight). */
+    public boolean isInflight(BlockCacheKey key) {
+        return inflight.containsKey(key);
+    }
+
+    /** Record a lead miss: acquireBlock needed a block that prefetch hadn't finished loading. */
+    public void recordLeadMiss() {
+        leadMisses.increment();
+    }
+
+    public long getLeadHits() { return leadHits.sum(); }
+    public long getLeadMisses() { return leadMisses.sum(); }
+
     // Testing only
     void resetStats() {
         prefetchCalls.set(0);
@@ -198,5 +245,9 @@ public class PrefetchTracker {
         executeRejections.set(0);
         l1Hits.set(0);
         l1Misses.set(0);
+        l1Promotions.set(0);
+        leadHits.reset();
+        leadMisses.reset();
+        completed.clear();
     }
 }

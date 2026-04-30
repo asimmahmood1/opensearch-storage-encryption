@@ -146,6 +146,17 @@ public interface BlockCache<T> {
     default void recordPrefetchL1Miss(long count) {}
 
     /**
+     * Check if a block was successfully loaded by prefetch (lead hit).
+     * Consumes the entry — subsequent calls for the same block return false.
+     */
+    default boolean checkPrefetchLeadHit(Path path, long blockOffset) { return false; }
+
+    /**
+     * Check if a block is currently being prefetched (in-flight) and record a lead miss if so.
+     */
+    default void checkPrefetchLeadMiss(Path path, long blockOffset) {}
+
+    /**
      * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
      * Note: does not check cache first, single IO call

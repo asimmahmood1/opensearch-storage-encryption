@@ -800,4 +800,113 @@ public class CaffeineBlockCacheTests {
         // Prefetch cache should be empty after loading
         assertEquals("Prefetch cache should be cleaned up", 0, prefetchTracker.size());
     }
+
+    /**
+     * Tests that loadMissingBlocks marks blocks as completed after actual load (not L2 hit).
+     * Uses synchronous executor so loadMissingBlocks completes before assertions.
+     */
+    @Test
+    public void testLoadMissingBlocksMarksCompletedOnActualLoad() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/lead.dat");
+        BlockCacheValue<String> mockValue = createMockValue("loaded");
+        when(mockLoader.load(any(Path.class), anyLong(), eq(1L), eq(50L)))
+            .thenReturn(new BlockCacheValue[] { mockValue });
+
+        syncCache.loadMissingBlocks(testPath, 0L, 1L);
+
+        assertEquals("Should have 1 completed entry", 1, syncTracker.completedSize());
+        assertTrue("checkLeadHit should consume the entry",
+            syncTracker.checkLeadHit(new FileBlockCacheKey(testPath, 0L)));
+        assertEquals(1, syncTracker.getLeadHits());
+        assertEquals(0, syncTracker.completedSize());
+    }
+
+    /**
+     * Tests that L2 cache hits during prefetch do NOT mark blocks as completed.
+     * Pre-populates L2 so cache.get() returns without calling the loader lambda.
+     */
+    @Test
+    public void testLoadMissingBlocksDoesNotMarkCompletedOnL2Hit() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/l2hit.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        BlockCacheValue<String> cachedValue = createMockValue("cached");
+
+        // Pre-populate L2 so prefetch finds a cache hit
+        caffeineCache.put(key, cachedValue);
+
+        syncCache.loadMissingBlocks(testPath, 0L, 1L);
+
+        assertEquals("L2 hit should NOT mark completed", 0, syncTracker.completedSize());
+        assertFalse(syncTracker.checkLeadHit(key));
+        assertEquals(0, syncTracker.getLeadHits());
+    }
+
+    /**
+     * Tests checkPrefetchLeadHit delegates correctly through CaffeineBlockCache.
+     */
+    @Test
+    public void testCheckPrefetchLeadHitDelegation() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/delegate.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        syncTracker.markCompleted(key);
+
+        assertTrue(syncCache.checkPrefetchLeadHit(testPath, 0L));
+        assertEquals(1, syncTracker.getLeadHits());
+        // Second call should return false — consumed
+        assertFalse(syncCache.checkPrefetchLeadHit(testPath, 0L));
+    }
+
+    /**
+     * Tests checkPrefetchLeadMiss records miss when block is in-flight.
+     */
+    @Test
+    public void testCheckPrefetchLeadMissWhenInflight() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/miss.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+
+        // Simulate block in-flight (prefetch started but not finished)
+        syncTracker.putIfAbsent(key);
+
+        syncCache.checkPrefetchLeadMiss(testPath, 0L);
+        assertEquals("Should record lead miss for in-flight block", 1, syncTracker.getLeadMisses());
+
+        // Clean up
+        syncTracker.remove(key);
+    }
+
+    /**
+     * Tests checkPrefetchLeadMiss does NOT record miss when block is not in-flight.
+     */
+    @Test
+    public void testCheckPrefetchLeadMissIgnoresNonInflight() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/nomiss.dat");
+
+        syncCache.checkPrefetchLeadMiss(testPath, 0L);
+        assertEquals("Should NOT record miss for non-inflight block", 0, syncTracker.getLeadMisses());
+    }
 }

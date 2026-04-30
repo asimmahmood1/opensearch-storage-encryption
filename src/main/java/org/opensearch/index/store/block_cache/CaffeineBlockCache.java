@@ -89,7 +89,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     ) {
         this.cache = cache;
         this.blockLoader = blockLoader;
-	this.maxBlocks = maxBlocks;
+        this.maxBlocks = maxBlocks;
         this.prefetchTracker = prefetchTracker;
         this.evictionListenerRef = evictionListenerRef;
     }
@@ -303,12 +303,14 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
                     try {
                         V[] result = blockLoader.load(k.filePath(), k.offset(), 1, 50);
                         @SuppressWarnings("unchecked")
-                        BlockCacheValue<T> value = (BlockCacheValue<T>) result[0];
+                        BlockCacheValue<T> v = (BlockCacheValue<T>) result[0];
                         loaded[0]++;
                         if (l1Promoter != null) {
-                            l1Promoter.accept(k.offset() / CACHE_BLOCK_SIZE, value);
+                            l1Promoter.accept(k.offset() / CACHE_BLOCK_SIZE, v);
+                            prefetchTracker.recordL1Promotion();
                         }
-                        return value;
+                        prefetchTracker.markCompleted(k);
+                        return v;
                     } catch (Exception e) {
                         return handleLoadException(k, e);
                     }
@@ -469,6 +471,18 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @Override
     public void recordPrefetchL1Miss(long count) {
         prefetchTracker.recordL1Misses(count);
+    }
+
+    @Override
+    public boolean checkPrefetchLeadHit(Path path, long blockOffset) {
+        return prefetchTracker.checkLeadHit(createBlockKey(path, blockOffset));
+    }
+
+    @Override
+    public void checkPrefetchLeadMiss(Path path, long blockOffset) {
+        if (prefetchTracker.isInflight(createBlockKey(path, blockOffset))) {
+            prefetchTracker.recordLeadMiss();
+        }
     }
 
     @Override

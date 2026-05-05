@@ -109,6 +109,7 @@ public class PrefetchTracker {
     public void clear() {
         inflight.clear();
         inflightCount.set(0);
+        completed.clear();
     }
 
     public void recordPrefetchCall(long blockCount) {

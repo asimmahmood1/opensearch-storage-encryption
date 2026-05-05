@@ -170,6 +170,12 @@ public interface BlockCache<T> {
     long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
 
     /**
+     * Checks if a block was loaded by readahead and removes it from tracking.
+     * @return true if the block was a readahead-loaded block
+     */
+    default boolean consumeReadAheadHit(Path filePath, long blockOffset) { return false; }
+
+    /**
      * Returns cache statistics as a formatted string.
      *
      * @return string representation of cache statistics including hit/miss ratios, sizes, etc.

@@ -268,6 +268,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (radixBlockTableRegistry != null) radixBlockTableRegistry.recordMiss();
         // Check if prefetch was supposed to have this block ready but hasn't finished
         blockCache.checkPrefetchLeadMiss(path, blockOffset);
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("[READ] file={} blockId={} blockOffset={}",
+                path.getFileName(), blockId, blockOffset);
+        }
         // ---- L2 lookup + disk load ----
         final FileBlockCacheKey key = new FileBlockCacheKey(path, blockOffset);
         // Try L2 hit
@@ -275,6 +279,9 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         if (v != null) {
             radixBlockTable.put(blockId, v);
             lastAccessWasCacheHit = true;
+            if (blockCache.consumeReadAheadHit(path, blockOffset)) {
+                WORKING_SET_ESTIMATOR.recordReadAheadAccess();
+            }
             return v;
         }
         // L2 miss — load from disk (deduped by Caffeine)
@@ -780,6 +787,10 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
     @Override
     public void prefetch(long offset, long length) throws IOException {
         ensureOpen();
+        // Guard against corrupt length values from VaryingBPV rankSlice reads
+        if (length <= 0 || length > this.length || offset < 0 || offset + length > this.length) {
+            return;
+        }
 
         final long startFileOffset = absoluteBaseOffset + offset;
         final long startBlockOffset = startFileOffset & ~CACHE_BLOCK_MASK;
@@ -787,6 +798,11 @@ public class CachedMemorySegmentIndexInput extends IndexInput implements RandomA
         final long endBlockOffset = (endFileOffset + CACHE_BLOCK_MASK) & ~CACHE_BLOCK_MASK;
         final long blockCount = (endBlockOffset - startBlockOffset) >>> CACHE_BLOCK_SIZE_POWER;
         final long startBlockId = startBlockOffset >>> CACHE_BLOCK_SIZE_POWER;
+
+        if (LOGGER.isTraceEnabled()) {
+            LOGGER.trace("[PREFETCH] file={} offset={} len={} blocks=[{}..{}] count={}",
+                path.getFileName(), offset, length, startBlockId, startBlockId + blockCount - 1, blockCount);
+        }
 
         if (blockCount == 1) {
             if (radixBlockTable.get(startBlockId) != null) {

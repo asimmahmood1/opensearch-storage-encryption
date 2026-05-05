@@ -57,7 +57,7 @@ public final class WindowedReadAheadConfig {
      * @return the default configuration
      */
     public static WindowedReadAheadConfig defaultConfig() {
-        return new WindowedReadAheadConfig(4, 32, 16);
+        return new WindowedReadAheadConfig(4, 256, 16);
     }
 
     /**

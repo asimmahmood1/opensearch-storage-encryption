@@ -42,7 +42,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
     private final Runnable signalCallback;
 
     // Bound per processQueue() call.
-    private static final long MAX_BLOCKS_PER_SUBMISSION = 64;
+    private static final long MAX_BLOCKS_PER_SUBMISSION = 128;
 
     // 75% of queue capacity checks (per-context guard to avoid building backlog).
     private static final int QUEUE_PRESSURE_NUM = 3;
@@ -144,13 +144,17 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
      */
     @Override
     public void onAccess(long blockOffsetBytes, boolean wasHit) {
+        if (!isReadAheadEnabled()) return; // DISABLED: readahead wastes 98.7% of loaded blocks
         if (isClosed || wasHit) {
+            if (LOGGER.isTraceEnabled() && !wasHit) LOGGER.trace("[RA-SKIP] closed, block={}", blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
             return;
         }
         if (!isSearchThread()) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] not search thread: {}, block={}", Thread.currentThread().getName(), blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
             return;
         }
         if (worker.isReadAheadPaused()) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] paused, block={}", blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
             return;
         }
 
@@ -158,7 +162,13 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
 
         final long currBlock = blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
 
+        // Skip ahead on first miss: avoid loading blocks [0, currBlock) for CFS slices
+        if (lastScheduledEndBlock == 0 && desiredEndBlock == 0) {
+            lastScheduledEndBlock = currBlock;
+        }
+
         if (policy.shouldTrigger(currBlock) == false) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] policy rejected block={}, window={}", currBlock, policy.currentWindow());
             return;
         }
 
@@ -167,9 +177,12 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         // Best-effort monotonic extend
         final long prevDesired = desiredEndBlock;
         if (target <= prevDesired) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] target={} <= prevDesired={}", target, prevDesired);
             return;
         }
         desiredEndBlock = target;
+
+        if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-TRIGGER] block={} target={} window={}", currBlock, target, policy.currentWindow());
 
         // Wake immediately on growth - idempotent gate prevents storms.
         // processQueue() naturally batches up to MAX_BLOCKS_PER_SUBMISSION (64).
@@ -359,7 +372,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
 
     @Override
     public boolean isReadAheadEnabled() {
-        return !isClosed;
+        return false; // DISABLED for benchmark: readahead wastes 98.7%
     }
 
     @Override

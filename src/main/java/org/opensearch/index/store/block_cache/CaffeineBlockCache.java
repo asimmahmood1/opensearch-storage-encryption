@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -53,6 +54,9 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
      * L1 caches when blocks are evicted.
      */
     private final AtomicReference<EvictionListener> evictionListenerRef;
+
+    /** Tracks block keys loaded by readahead so the read path can detect readahead hits. */
+    private final Set<BlockCacheKey> readAheadBlocks = ConcurrentHashMap.newKeySet();
 
     /**
      * Constructs a new CaffeineBlockCache with the specified cache, block loader, and prefetch tracker.
@@ -102,6 +106,11 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
     @Override
     public BlockCacheValue<T> get(BlockCacheKey key) {
         return cache.getIfPresent(key);
+    }
+
+    @Override
+    public boolean consumeReadAheadHit(Path filePath, long blockOffset) {
+        return readAheadBlocks.remove(createBlockKey(filePath, blockOffset));
     }
 
     /**
@@ -284,6 +293,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
     private void loadMissingBlocksSync(Path filePath, long startOffset, long blockCount,
                                        BiConsumer<Long, BlockCacheValue<T>> l1Promoter) {
+
         BlockCacheKey[] keys = new BlockCacheKey[(int) blockCount];
         int keyCount = 0;
         for (int i = 0; i < blockCount; i++) {
@@ -362,6 +372,7 @@ public final class CaffeineBlockCache<T, V> implements BlockCache<T> {
 
                 if (cache.asMap().putIfAbsent(key, wrapped) == null) {
                     // Successfully inserted into cache
+                    readAheadBlocks.add(key);
                     loadedCount++;
                 } else {
                     // already cached → release our newly loaded segment as we won't use it

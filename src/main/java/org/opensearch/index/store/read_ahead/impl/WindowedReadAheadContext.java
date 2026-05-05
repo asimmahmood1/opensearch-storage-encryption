@@ -42,11 +42,15 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
     private final Runnable signalCallback;
 
     // Bound per processQueue() call.
-    private static final long MAX_BLOCKS_PER_SUBMISSION = 64;
+    private static final long MAX_BLOCKS_PER_SUBMISSION = 128;
 
     // 75% of queue capacity checks (per-context guard to avoid building backlog).
     private static final int QUEUE_PRESSURE_NUM = 3;
     private static final int QUEUE_PRESSURE_DEN = 4;
+
+    // Thread pool name fragments allowed to trigger read-ahead.
+    private static final String SEARCH_THREAD_MARKER = "[search]";
+    private static final String INDEX_SEARCHER_THREAD_MARKER = "[index_searcher]";
 
     // Desired tail (exclusive, in blocks), and scheduled tail (exclusive, in blocks).
     private volatile long desiredEndBlock = 0;
@@ -133,17 +137,24 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
      *
      * We only react on misses:
      *  - bail if worker is globally paused (node-wide thrash/pressure)
+     *  - bail if thread is not a search thread
      *  - ask policy if this access pattern should trigger readahead
      *  - extend desired tail to currBlock + leadBlocks() (best-effort monotonic)
      *  - wake worker once if we grew enough since the last wake
      */
     @Override
     public void onAccess(long blockOffsetBytes, boolean wasHit) {
+        if (!isReadAheadEnabled()) return; // DISABLED: readahead wastes 98.7% of loaded blocks
         if (isClosed || wasHit) {
+            if (LOGGER.isTraceEnabled() && !wasHit) LOGGER.trace("[RA-SKIP] closed, block={}", blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
             return;
         }
-
+        if (!isSearchThread()) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] not search thread: {}, block={}", Thread.currentThread().getName(), blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
+            return;
+        }
         if (worker.isReadAheadPaused()) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] paused, block={}", blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER);
             return;
         }
 
@@ -151,7 +162,13 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
 
         final long currBlock = blockOffsetBytes >>> CACHE_BLOCK_SIZE_POWER;
 
+        // Skip ahead on first miss: avoid loading blocks [0, currBlock) for CFS slices
+        if (lastScheduledEndBlock == 0 && desiredEndBlock == 0) {
+            lastScheduledEndBlock = currBlock;
+        }
+
         if (policy.shouldTrigger(currBlock) == false) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] policy rejected block={}, window={}", currBlock, policy.currentWindow());
             return;
         }
 
@@ -160,9 +177,12 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         // Best-effort monotonic extend
         final long prevDesired = desiredEndBlock;
         if (target <= prevDesired) {
+            if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-SKIP] target={} <= prevDesired={}", target, prevDesired);
             return;
         }
         desiredEndBlock = target;
+
+        if (LOGGER.isTraceEnabled()) LOGGER.trace("[RA-TRIGGER] block={} target={} window={}", currBlock, target, policy.currentWindow());
 
         // Wake immediately on growth - idempotent gate prevents storms.
         // processQueue() naturally batches up to MAX_BLOCKS_PER_SUBMISSION (64).
@@ -315,6 +335,9 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         if (isClosed) {
             return;
         }
+        if (!isSearchThread()) {
+            return;
+        }
         if (worker.isReadAheadPaused()) {
             return;
         }
@@ -349,7 +372,7 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
 
     @Override
     public boolean isReadAheadEnabled() {
-        return !isClosed;
+        return false; // DISABLED for benchmark: readahead wastes 98.7%
     }
 
     @Override
@@ -362,6 +385,11 @@ public final class WindowedReadAheadContext implements ReadaheadContext {
         desiredEndBlock = lastScheduledEndBlock;
         lastWakeDesiredEndBlock = lastScheduledEndBlock;
         WAKEUP_VH.setRelease(this, 0);
+    }
+
+    private static boolean isSearchThread() {
+        String name = Thread.currentThread().getName();
+        return name.contains(SEARCH_THREAD_MARKER) || name.contains(INDEX_SEARCHER_THREAD_MARKER);
     }
 
     private boolean maybeWakeWorkerOnce() {

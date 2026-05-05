@@ -23,6 +23,7 @@ import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsFilter;
+import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -35,15 +36,17 @@ import org.opensearch.index.shard.IndexEventListener;
 import org.opensearch.index.store.action.GetIndexCountForKeyAction;
 import org.opensearch.index.store.action.TransportGetIndexCountForKeyAction;
 import org.opensearch.index.store.block_cache.BlockCache;
-import org.opensearch.index.store.block_loader.FileChannelCache;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.pool.PoolSizeCalculator;
 import org.opensearch.index.store.rest.RestGetIndexCountForKeyAction;
 import org.opensearch.index.store.rest.RestRegisterCryptoAction;
 import org.opensearch.index.store.rest.RestUnregisterCryptoAction;
+import org.opensearch.index.store.rest.RestClearBufferPoolCacheAction;
 import org.opensearch.indices.RemoteStoreSettings;
 import org.opensearch.indices.cluster.IndicesClusterStateService.AllocatedIndices.IndexRemovalReason;
 import org.opensearch.plugins.ActionPlugin;
@@ -57,9 +60,13 @@ import org.opensearch.rest.RestHandler;
 import org.opensearch.script.ScriptService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.tracing.Tracer;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
+import org.opensearch.index.store.hll.WorkingSetEstimatorScheduler;
+import org.opensearch.index.store.rest.RestCacheStatsAction;
 
 /**
  * A plugin that enables index level encryption and decryption.
@@ -72,14 +79,17 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     public static final String CRYPTO_PLUGIN_ENABLED = "plugins.crypto.enabled";
 
+    public static final String CRYPTO_PLUGIN_THREADPOOL_PREFETCH = "crypto_plugin_prefetch_threadpool";
+
     /**
      * Setting for controlling whether the crypto plugin is enabled.
      */
     public static final Setting<Boolean> CRYPTO_PLUGIN_ENABLED_SETTING = Setting
-        .boolSetting(CRYPTO_PLUGIN_ENABLED, false, Setting.Property.NodeScope, Setting.Property.Filtered, Setting.Property.Final);
+        .boolSetting(CRYPTO_PLUGIN_ENABLED, true, Setting.Property.NodeScope, Setting.Property.Filtered, Setting.Property.Final);
 
     private NodeEnvironment nodeEnvironment;
     private final boolean enabled;
+    private volatile boolean clearCacheBeforeSearch;
 
     // Static storage for remote store parameters (accessible by CryptoEngineFactory)
     private static Supplier<RepositoriesService> repositoriesServiceSupplier;
@@ -91,7 +101,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
      */
     public CryptoDirectoryPlugin(Settings settings) {
         super();
-        this.enabled = settings.getAsBoolean(CRYPTO_PLUGIN_ENABLED, false);
+        this.enabled = settings.getAsBoolean(CRYPTO_PLUGIN_ENABLED, true);
 
         if (enabled) {
             log.info("OpenSearch Crypto Directory Plugin is enabled and ready for encryption operations");
@@ -104,6 +114,7 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     CRYPTO_PLUGIN_ENABLED
                 );
         }
+        log.info("bufferpool prefetch enabled: true");
     }
 
     /**
@@ -143,14 +154,17 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                 CryptoDirectoryFactory.INDEX_KMS_ENC_CTX_SETTING,
                 CryptoDirectoryFactory.NODE_KEY_REFRESH_INTERVAL_SETTING,
                 CryptoDirectoryFactory.NODE_KEY_EXPIRY_INTERVAL_SETTING,
-                CryptoDirectoryFactory.WRITE_CACHE_ENABLED_SETTING,
                 PoolSizeCalculator.NODE_POOL_SIZE_PERCENTAGE_SETTING,
                 PoolSizeCalculator.NODE_CACHE_TO_POOL_RATIO_SETTING,
                 PoolSizeCalculator.NODE_WARMUP_PERCENTAGE_SETTING,
-                PoolSizeCalculator.NODE_MAX_FILE_CHANNELS_SETTING,
-                PoolSizeCalculator.NODE_FD_CACHE_EXPIRE_SECONDS_SETTING
+                CryptoDirectoryFactory.BUFFERPOOL_FLUSH_ENABLED_SETTING,
+                CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING
             );
         return settings;
+    }
+
+    public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+        return Collections.emptyList();
     }
 
     /**
@@ -176,9 +190,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         }
 
         // Only provide our custom engine factory for cryptofs indices
-        if (CryptoDirectoryFactory.STORE_TYPE.equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
-            return Optional.of(new CryptoEngineFactory());
-        }
+        // if (CryptoDirectoryFactory.STORE_TYPE.equals(indexSettings.getValue(IndexModule.INDEX_STORE_TYPE_SETTING))) {
+        //     return Optional.of(new CryptoEngineFactory());
+        // }
         return Optional.empty();
     }
 
@@ -210,6 +224,9 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Create RemoteStoreSettings with node settings and cluster settings
         CryptoDirectoryPlugin.remoteStoreSettings = new RemoteStoreSettings(environment.settings(), clusterService.getClusterSettings());
 
+        // Initialize StaticConfigs with the DynamicConfig block size value
+        StaticConfigs.init(1 << 20); // 1MB default block size
+
         // Set cluster service for accessing cluster metadata (e.g., repository settings)
         CryptoDirectoryFactory.setClusterService(clusterService);
 
@@ -225,9 +242,26 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         // Pool resources are lazily initialized on first cryptofs shard creation
         // This prevents allocation on dedicated master nodes which never create shards
         CryptoDirectoryFactory.setNodeSettings(environment.settings());
+        CryptoDirectoryFactory.setThreadPool(threadPool);
         CryptoMetricsService.initialize(metricsRegistry);
 
-        return Collections.emptyList();
+        // Initialize I/O backend setting and register dynamic update listener
+        CryptoDirectoryFactory.initializeIOBackendSetting(clusterService);
+
+        // Wire clear-cache-before-search benchmark setting
+        this.clearCacheBeforeSearch = CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING.get(environment.settings());
+        clusterService.getClusterSettings().addSettingsUpdateConsumer(
+            CryptoDirectoryFactory.CLEAR_CACHE_BEFORE_SEARCH_SETTING,
+            value -> this.clearCacheBeforeSearch = value
+        );
+
+        // Create HLL working set estimator scheduler (starts when enabled via dynamic config)
+        WorkingSetEstimatorScheduler hllScheduler =
+            new WorkingSetEstimatorScheduler(threadPool);
+
+        log.info("ILE DEBUG: Plugin initialized!");
+
+        return Collections.singletonList(hllScheduler);
     }
 
     @Override
@@ -238,9 +272,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         }
 
         MasterKeyHealthMonitor.shutdown();
-        // Close shared pool resources if they were initialized
-        // the shared pool is initialized only when at least one index
-        // level enc enabled index is created.
         CryptoDirectoryFactory.closeSharedPool();
     }
 
@@ -259,7 +290,13 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return Arrays.asList(new RestRegisterCryptoAction(), new RestUnregisterCryptoAction(), new RestGetIndexCountForKeyAction());
+        return Arrays.asList(
+            new RestRegisterCryptoAction(),
+            new RestUnregisterCryptoAction(),
+            new RestGetIndexCountForKeyAction(),
+            new RestClearBufferPoolCacheAction(clusterSettings),
+            new RestCacheStatsAction()
+        );
     }
 
     @Override
@@ -273,12 +310,14 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
             return;
         }
 
-        Settings indexSettings = indexModule.getSettings();
-        String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
+        // Commenting below store-type validation since currently we do not have cryptofs as a store type setting in metadata service
+        // and we are relying on cryptofs as a directoryFactory 
+        // Settings indexSettings = indexModule.getSettings();
+        // String storeType = indexSettings.get(IndexModule.INDEX_STORE_TYPE_SETTING.getKey());
 
-        if (CryptoDirectoryFactory.STORE_TYPE.equals(storeType)) {
+        // if (CryptoDirectoryFactory.STORE_TYPE.equals(storeType)) {
             // Validate crypto settings early at index creation time
-            CryptoIndexSettingsValidator.validate(indexSettings);
+            // CryptoIndexSettingsValidator.validate(indexSettings);
             indexModule.addIndexEventListener(new IndexEventListener() {
                 /*
                  * Cache invalidation for closed shards is handled automatically
@@ -294,14 +333,6 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     if (cache != null && nodeEnvironment != null) {
                         for (Path indexPath : nodeEnvironment.indexPaths(index)) {
                             cache.invalidateByPathPrefix(indexPath);
-                        }
-                    }
-
-                    // Invalidate FD cache entries for all files in the deleted index
-                    FileChannelCache fdCache = CryptoDirectoryFactory.getSharedFileChannelCache();
-                    if (fdCache != null && nodeEnvironment != null) {
-                        for (Path indexPath : nodeEnvironment.indexPaths(index)) {
-                            fdCache.invalidateByPathPrefix(indexPath);
                         }
                     }
 
@@ -322,6 +353,22 @@ public class CryptoDirectoryPlugin extends Plugin implements IndexStorePlugin, E
                     }
                 }
             });
-        }
+
+            // Cold-cache benchmark hook: clears L1+L2 AFTER each query (async so clear time is not measured by OSB)
+            indexModule.addSearchOperationListener(new org.opensearch.index.shard.SearchOperationListener() {
+                @Override
+                public void onQueryPhase(org.opensearch.search.internal.SearchContext searchContext, long tookInNanos) {
+                    if (!clearCacheBeforeSearch) return;
+                    java.util.concurrent.ForkJoinPool.commonPool().execute(() -> {
+                        long start = System.nanoTime();
+                        RadixBlockTableRegistry l1 = CryptoDirectoryFactory.getSharedRadixBlockTableRegistry();
+                        if (l1 != null) l1.clearContents();
+                        BlockCache<?> l2 = CryptoDirectoryFactory.getSharedBlockCache();
+                        if (l2 != null) l2.clearSafely();
+                        log.info("Cleared L1+L2 caches after query in {}ms", (System.nanoTime() - start) / 1_000_000.0);
+                    });
+                }
+            });
+        // }
     }
 }

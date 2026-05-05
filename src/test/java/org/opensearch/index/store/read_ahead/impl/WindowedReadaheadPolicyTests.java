@@ -4,6 +4,12 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -14,12 +20,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.opensearch.test.OpenSearchTestCase;
+import org.junit.Test;
 
 /**
  * Comprehensive tests for WindowedReadaheadPolicy covering all behavioral scenarios.
  */
-public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
+
+public class WindowedReadaheadPolicyTests {
 
     private static final int CACHE_BLOCK_SIZE = 8192; // 2^13 from DirectIoConfigs.CACHE_BLOCK_SIZE_POWER
     private static final Path TEST_PATH = Paths.get("/test/file.dat");
@@ -29,7 +36,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests basic construction with valid parameters.
      */
-    public void testConstruction() {
+    @Test
+    public void Construction() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         assertNotNull("Policy should be created", policy);
@@ -41,7 +49,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests construction with full parameter set.
      */
-    public void testConstructionFullParameters() {
+    @Test
+    public void ConstructionFullParameters() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 256, 2, 4);
 
         assertNotNull("Policy should be created", policy);
@@ -53,16 +62,18 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests that initialWindow must be >= 1.
      */
-    public void testInvalidInitialWindowZero() {
-        IllegalArgumentException ex = expectThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 0, 128, 8));
+    @Test
+    public void InvalidInitialWindowZero() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 0, 128, 8));
         assertTrue("Error message should mention initialWindow", ex.getMessage().contains("initialWindow"));
     }
 
     /**
      * Tests that initialWindow must be >= 1.
      */
-    public void testInvalidInitialWindowNegative() {
-        IllegalArgumentException ex = expectThrows(
+    @Test
+    public void InvalidInitialWindowNegative() {
+        IllegalArgumentException ex = assertThrows(
             IllegalArgumentException.class,
             () -> new WindowedReadaheadPolicy(TEST_PATH, -1, 128, 8)
         );
@@ -72,16 +83,18 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests that maxWindow must be >= initialWindow.
      */
-    public void testInvalidMaxWindowLessThanInitial() {
-        IllegalArgumentException ex = expectThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 16, 8, 8));
+    @Test
+    public void InvalidMaxWindowLessThanInitial() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 16, 8, 8));
         assertTrue("Error message should mention maxWindow", ex.getMessage().contains("maxWindow"));
     }
 
     /**
      * Tests that minLead must be >= 1.
      */
-    public void testInvalidMinLeadZero() {
-        IllegalArgumentException ex = expectThrows(
+    @Test
+    public void InvalidMinLeadZero() {
+        IllegalArgumentException ex = assertThrows(
             IllegalArgumentException.class,
             () -> new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 0, 8)
         );
@@ -91,15 +104,17 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests that smallGapDivisor must be >= 2.
      */
-    public void testInvalidSmallGapDivisorOne() {
-        IllegalArgumentException ex = expectThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 1));
+    @Test
+    public void InvalidSmallGapDivisorOne() {
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 1));
         assertTrue("Error message should mention smallGapDivisor", ex.getMessage().contains("smallGapDivisor"));
     }
 
     /**
      * Tests that initialWindow == maxWindow is valid (no growth).
      */
-    public void testInitialEqualsMaxWindow() {
+    @Test
+    public void InitialEqualsMaxWindow() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 16, 16, 8);
 
         assertEquals("Initial should equal max", policy.initialWindow(), policy.maxWindow());
@@ -111,7 +126,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests first access triggers readahead and initializes state.
      */
-    public void testFirstAccess() {
+    @Test
+    public void FirstAccess() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         boolean triggered = policy.shouldTrigger(0);
@@ -123,7 +139,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests sequential forward reads trigger and grow window.
      */
-    public void testSequentialForwardGrowth() {
+    @Test
+    public void SequentialForwardGrowth() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // First access
@@ -144,7 +161,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests window growth caps at maxWindow.
      */
-    public void testWindowGrowthCapsAtMax() {
+    @Test
+    public void WindowGrowthCapsAtMax() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 32, 8);
 
         policy.shouldTrigger(0);
@@ -164,7 +182,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests that all sequential accesses trigger readahead.
      */
-    public void testSequentialAccessesAllTrigger() {
+    @Test
+    public void SequentialAccessesAllTrigger() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         List<Boolean> triggers = new ArrayList<>();
@@ -181,7 +200,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests gap = 2 is considered sequential within buffer.
      */
-    public void testSmallGapsStillSequential() {
+    @Test
+    public void SmallGapsStillSequential() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 8);
 
         policy.shouldTrigger(0);
@@ -197,7 +217,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests gap within seqGapBuffer is sequential.
      */
-    public void testSequentialGapBuffer() {
+    @Test
+    public void SequentialGapBuffer() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 8);
 
         policy.shouldTrigger(0);
@@ -215,7 +236,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests small forward jump triggers but shrinks window.
      */
-    public void testSmallForwardJump() {
+    @Test
+    public void SmallForwardJump() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up window to 64
@@ -238,7 +260,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests large forward jump resets window without triggering.
      */
-    public void testLargeForwardJump() {
+    @Test
+    public void LargeForwardJump() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up window
@@ -258,7 +281,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests boundary between small and large jumps.
      */
-    public void testJumpBoundary() {
+    @Test
+    public void JumpBoundary() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 4);
 
         // Build window - start at 8, doubles each time
@@ -285,7 +309,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests reading same position doesn't trigger or change window.
      */
-    public void testSamePosition() {
+    @Test
+    public void SamePosition() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(0);
@@ -301,7 +326,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests multiple same position reads.
      */
-    public void testRepeatedSamePosition() {
+    @Test
+    public void RepeatedSamePosition() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(5L);
@@ -320,7 +346,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests small backward seek decays window without triggering.
      */
-    public void testSmallBackwardSeek() {
+    @Test
+    public void SmallBackwardSeek() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up window
@@ -341,7 +368,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests large backward seek resets window.
      */
-    public void testLargeBackwardSeek() {
+    @Test
+    public void LargeBackwardSeek() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up window
@@ -374,7 +402,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests backward seek that is exactly window/2.
      */
-    public void testBackwardSeekAtBoundary() {
+    @Test
+    public void BackwardSeekAtBoundary() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 16
@@ -394,7 +423,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests backward seek beyond window/2 resets.
      */
-    public void testBackwardSeekBeyondBoundary() {
+    @Test
+    public void BackwardSeekBeyondBoundary() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 16
@@ -416,7 +446,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests decay reduces window by 25%.
      */
-    public void testDecayAmount() {
+    @Test
+    public void DecayAmount() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 32
@@ -437,7 +468,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests decay doesn't go below initialWindow.
      */
-    public void testDecayFloor() {
+    @Test
+    public void DecayFloor() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 8);
 
         // Start at initial window
@@ -453,7 +485,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests multiple decays gradually reduce window.
      */
-    public void testMultipleDecays() {
+    @Test
+    public void MultipleDecays() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build to 64
@@ -489,7 +522,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests leadBlocks returns appropriate value.
      */
-    public void testLeadBlocks() {
+    @Test
+    public void LeadBlocks() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 6, 128, 2, 8);
 
         policy.shouldTrigger(0);
@@ -503,7 +537,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests leadBlocks grows with window.
      */
-    public void testLeadBlocksGrowsWithWindow() {
+    @Test
+    public void LeadBlocksGrowsWithWindow() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 6, 128, 2, 8);
 
         policy.shouldTrigger(0);
@@ -519,7 +554,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests leadBlocks respects minLead.
      */
-    public void testLeadBlocksRespectsMinimum() {
+    @Test
+    public void LeadBlocksRespectsMinimum() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 3, 128, 5, 8);
 
         policy.shouldTrigger(0);
@@ -534,7 +570,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests onQueuePressureMedium shrinks window by half.
      */
-    public void testQueuePressureMedium() {
+    @Test
+    public void QueuePressureMedium() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 32
@@ -552,7 +589,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests medium pressure doesn't go below initial.
      */
-    public void testQueuePressureMediumFloor() {
+    @Test
+    public void QueuePressureMediumFloor() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 8);
 
         policy.shouldTrigger(0);
@@ -566,7 +604,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests onQueuePressureHigh resets to initial.
      */
-    public void testQueuePressureHigh() {
+    @Test
+    public void QueuePressureHigh() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 64
@@ -584,7 +623,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests onQueueSaturated applies medium pressure.
      */
-    public void testQueueSaturated() {
+    @Test
+    public void QueueSaturated() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(0);
@@ -602,7 +642,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests onCacheHitShrink reduces window.
      */
-    public void testCacheHitShrink() {
+    @Test
+    public void CacheHitShrink() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build window to 32
@@ -620,7 +661,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests cache hit shrink doesn't go below initial.
      */
-    public void testCacheHitShrinkFloor() {
+    @Test
+    public void CacheHitShrinkFloor() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 128, 8);
 
         policy.shouldTrigger(0);
@@ -635,7 +677,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests reset returns to initial state.
      */
-    public void testReset() {
+    @Test
+    public void Reset() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up state
@@ -656,7 +699,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests reset clears position history.
      */
-    public void testResetClearsHistory() {
+    @Test
+    public void ResetClearsHistory() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         policy.shouldTrigger(50L);
@@ -673,7 +717,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests thread-safe concurrent access.
      */
-    public void testConcurrentAccess() throws Exception {
+    @Test
+    public void ConcurrentAccess() throws Exception {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         int threadCount = 8;
@@ -719,7 +764,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests concurrent pressure callbacks don't corrupt state.
      */
-    public void testConcurrentPressureCallbacks() throws Exception {
+    @Test
+    public void ConcurrentPressureCallbacks() throws Exception {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up window
@@ -777,7 +823,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests alternating sequential and random access.
      */
-    public void testAlternatingPattern() {
+    @Test
+    public void AlternatingPattern() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 64, 8);
 
         // Sequential burst
@@ -800,7 +847,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests recovery from backward seek.
      */
-    public void testRecoveryFromBackwardSeek() {
+    @Test
+    public void RecoveryFromBackwardSeek() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Build up
@@ -823,7 +871,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests stress scenario with pressure and growth.
      */
-    public void testStressWithPressure() {
+    @Test
+    public void StressWithPressure() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 4, 128, 8);
 
         // Grow window
@@ -846,7 +895,8 @@ public class WindowedReadaheadPolicyTests extends OpenSearchTestCase {
     /**
      * Tests typical Lucene access pattern (sequential with occasional jumps).
      */
-    public void testTypicalLucenePattern() {
+    @Test
+    public void TypicalLucenePattern() {
         WindowedReadaheadPolicy policy = new WindowedReadaheadPolicy(TEST_PATH, 8, 256, 8);
 
         long blockIndex = 0;

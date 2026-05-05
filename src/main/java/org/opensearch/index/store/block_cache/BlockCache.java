@@ -6,7 +6,7 @@ package org.opensearch.index.store.block_cache;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Map;
+import java.util.function.BiConsumer;
 
 /**
  * Generic block cache interface for storing and retrieving blocks of data.
@@ -21,6 +21,25 @@ import java.util.Map;
  * @opensearch.internal
  */
 public interface BlockCache<T> {
+
+    /**
+     * Callback invoked when a block is evicted from the cache.
+     * Used to notify L1 caches (RadixBlockTable) so they can clear stale entries.
+     */
+    @FunctionalInterface
+    interface EvictionListener {
+        void onEviction(Path path, long blockOffset);
+    }
+
+    /**
+     * Registers a listener that is notified when blocks are evicted from this cache.
+     * The listener is called before the evicted value is closed.
+     *
+     * @param listener the eviction listener
+     */
+    default void setEvictionListener(EvictionListener listener) {
+        // no-op by default; implementations that support eviction notification override this
+    }
 
     /**
      * Returns the block if cached, or null if absent.
@@ -82,16 +101,79 @@ public interface BlockCache<T> {
     void clear();
 
     /**
-     * Load multiple blocks for prefetch/readahead with a short timeout to fail fast when pool is under pressure.
+     * Clear all blocks from the cache that are not currently in use (refCount == 1).
+     * This is a safer alternative to clear() that avoids clearing blocks that are actively being used.
+     */
+    void clearSafely();
+
+    /**
+     * Load multiple blocks for prefetch with a short timeout to fail fast when pool is under pressure.
      * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     * Checks cache first and only loads missing blocks, combining consecutive ranges into single bulk loads.
      *
      * @param filePath file to read from
      * @param startOffset starting file offset (should be block-aligned)
      * @param blockCount number of blocks to read
-     * @return map of cache keys to cache values for blocks that were successfully loaded into the cache
      * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
      */
-    Map<BlockCacheKey, BlockCacheValue<T>> loadForPrefetch(Path filePath, long startOffset, long blockCount) throws IOException;
+    void loadMissingBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+
+    /**
+     * Load missing blocks into L2 and promote to L1 via the provided callback.
+     * The callback is invoked only on actual cache misses (new loads), not L2 hits.
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @param l1Promoter callback receiving (blockId, value) for each newly loaded block
+     * @throws IOException if loading fails
+     */
+    default void loadMissingBlocks(Path filePath, long startOffset, long blockCount,
+                                   BiConsumer<Long, BlockCacheValue<T>> l1Promoter) throws IOException {
+        loadMissingBlocks(filePath, startOffset, blockCount);
+    }
+
+    /**
+     * Records L1 cache hits during prefetch.
+     * @param count number of L1 hits
+     */
+    default void recordPrefetchL1Hit(long count) {}
+
+    /**
+     * Records L1 cache misses during prefetch.
+     * @param count number of L1 misses
+     */
+    default void recordPrefetchL1Miss(long count) {}
+
+    /**
+     * Check if a block was successfully loaded by prefetch (lead hit).
+     * Consumes the entry — subsequent calls for the same block return false.
+     */
+    default boolean checkPrefetchLeadHit(Path path, long blockOffset) { return false; }
+
+    /**
+     * Check if a block is currently being prefetched (in-flight) and record a lead miss if so.
+     */
+    default void checkPrefetchLeadMiss(Path path, long blockOffset) {}
+
+    /**
+     * Load multiple blocks for readahead with a short timeout to fail fast when pool is under pressure.
+     * Uses a 50ms timeout for pool segment acquisition - prefetch should not block critical I/O.
+     * Note: does not check cache first, single IO call
+     *
+     * @param filePath file to read from
+     * @param startOffset starting file offset (should be block-aligned)
+     * @param blockCount number of blocks to read
+     * @return count of blocks that were successfully loaded into the cache
+     * @throws IOException if loading fails (including pool timeout, which is expected under pressure)
+     */
+    long loadAllBlocks(Path filePath, long startOffset, long blockCount) throws IOException;
+
+    /**
+     * Checks if a block was loaded by readahead and removes it from tracking.
+     * @return true if the block was a readahead-loaded block
+     */
+    default boolean consumeReadAheadHit(Path filePath, long blockOffset) { return false; }
 
     /**
      * Returns cache statistics as a formatted string.
@@ -118,6 +200,13 @@ public interface BlockCache<T> {
      * @return number of entries in the cache
      */
     long getCacheSize();
+
+    /**
+     * Returns the maximum size (capacity) of the cache.
+     *
+     * @return maximum number of entries the cache can hold, or 0 if unbounded
+     */
+    long getMaxSize();
 
     /**
      * Returns the cumulative count of cache hits.

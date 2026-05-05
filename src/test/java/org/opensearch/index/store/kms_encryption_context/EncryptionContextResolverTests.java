@@ -10,8 +10,11 @@ import static org.mockito.Mockito.when;
 import java.io.IOException;
 import java.util.Collections;
 
-import org.apache.lucene.tests.util.LuceneTestCase;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterState;
@@ -29,7 +32,7 @@ import org.opensearch.test.IndexSettingsModule;
 /**
  * Tests for encryption context resolution and merging logic.
  */
-public class EncryptionContextResolverTests extends LuceneTestCase {
+public class EncryptionContextResolverTests {
 
     private static final String TEST_REPO_NAME = "test-s3-repo";
     private static final String AMAZON_ENC_CTX_VALUE = "domainARN=arn:aws:es:eu-west-1:110365260509:domain/test-domain";
@@ -56,7 +59,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test that NoOpResolver returns empty encryption context.
      */
-    public void testNoOpResolverReturnsEmpty() {
+    @Test
+    public void NoOpResolverReturnsEmpty() {
         ClusterService mockClusterService = mock(ClusterService.class);
         EncryptionContextResolver resolver = EncryptionContextResolverFactory
             .create(EncryptionContextResolverType.NONE, mockClusterService);
@@ -68,7 +72,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test that AmazonResolver returns empty when no cluster service is available.
      */
-    public void testAmazonResolverWithoutClusterService() {
+    @Test
+    public void AmazonResolverWithoutClusterService() {
         EncryptionContextResolver resolver = EncryptionContextResolverFactory.create(EncryptionContextResolverType.AMAZON, null);
 
         assertEquals("AmazonEncryptionContextResolver", resolver.getName());
@@ -78,7 +83,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test that AmazonResolver returns empty when no repositories exist.
      */
-    public void testAmazonResolverWithNoRepositories() {
+    @Test
+    public void AmazonResolverWithNoRepositories() {
         ClusterService mockClusterService = createMockClusterService(null);
         EncryptionContextResolver resolver = EncryptionContextResolverFactory
             .create(EncryptionContextResolverType.AMAZON, mockClusterService);
@@ -89,10 +95,10 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test that AmazonResolver extracts encryption context from repository settings.
      */
-    public void testAmazonResolverExtractsFromRepository() {
+    @Test
+    public void AmazonResolverExtractsFromRepository() {
         ClusterService mockClusterService = createMockClusterServiceWithRepository(TEST_REPO_NAME, AMAZON_ENC_CTX_VALUE);
-        // ClusterSettings clusterSettings = mock(ClusterSettings.class);
-        // when(mockClusterService.getClusterSettings()).thenReturn(clusterSettings);
+
         EncryptionContextResolver resolver = EncryptionContextResolverFactory
             .create(EncryptionContextResolverType.AMAZON, mockClusterService);
 
@@ -103,7 +109,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test encryption context merging: default only (no index-specific).
      */
-    public void testEncryptionContextMergingDefaultOnly() {
+    @Test
+    public void EncryptionContextMergingDefaultOnly() {
         // Setup cluster with repository containing encryption context
         ClusterService mockClusterService = createMockClusterServiceWithRepository(TEST_REPO_NAME, AMAZON_ENC_CTX_VALUE);
 
@@ -120,7 +127,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test encryption context merging: default + index-specific.
      */
-    public void testEncryptionContextMergingWithIndexSpecific() {
+    @Test
+    public void EncryptionContextMergingWithIndexSpecific() {
         // Setup cluster with repository containing encryption context
         ClusterService mockClusterService = createMockClusterServiceWithRepository(TEST_REPO_NAME, AMAZON_ENC_CTX_VALUE);
 
@@ -141,7 +149,8 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test that the factory creates the correct resolver type.
      */
-    public void testFactoryCreatesCorrectResolverType() {
+    @Test
+    public void FactoryCreatesCorrectResolverType() {
         ClusterService mockClusterService = mock(ClusterService.class);
 
         // Test NONE type
@@ -158,17 +167,18 @@ public class EncryptionContextResolverTests extends LuceneTestCase {
     /**
      * Test enum parsing from string.
      */
-    public void testEncryptionContextResolverTypeFromString() {
+    @Test
+    public void EncryptionContextResolverTypeFromString() {
         assertEquals(EncryptionContextResolverType.AMAZON, EncryptionContextResolverType.fromString("amazon"));
         assertEquals(EncryptionContextResolverType.AMAZON, EncryptionContextResolverType.fromString("AMAZON"));
         assertEquals(EncryptionContextResolverType.NONE, EncryptionContextResolverType.fromString("none"));
         assertEquals(EncryptionContextResolverType.NONE, EncryptionContextResolverType.fromString("NONE"));
 
         // Test invalid value
-        expectThrows(IllegalArgumentException.class, () -> EncryptionContextResolverType.fromString("invalid"));
+        assertThrows(IllegalArgumentException.class, () -> EncryptionContextResolverType.fromString("invalid"));
 
         // Test null value
-        expectThrows(IllegalArgumentException.class, () -> EncryptionContextResolverType.fromString(null));
+        assertThrows(IllegalArgumentException.class, () -> EncryptionContextResolverType.fromString(null));
     }
 
     /**

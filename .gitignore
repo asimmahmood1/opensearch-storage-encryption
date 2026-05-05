@@ -6,4 +6,4 @@ build/
 *.ipr
 .DS_Store
 bin/
-gradle.properties
+gradle.propertiesprofile-results/

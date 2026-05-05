@@ -6,7 +6,6 @@ package org.opensearch.index.translog;
 
 import java.io.IOException;
 
-import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.common.blobstore.BlobPath;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.index.remote.RemoteTranslogTransferTracker;
@@ -16,6 +15,7 @@ import org.opensearch.index.translog.transfer.TransferService;
 import org.opensearch.index.translog.transfer.TransferSnapshot;
 import org.opensearch.index.translog.transfer.TranslogTransferManager;
 import org.opensearch.index.translog.transfer.listener.TranslogTransferListener;
+import org.opensearch.cluster.metadata.CryptoMetadata;
 import org.opensearch.indices.RemoteStoreSettings;
 
 /**
@@ -80,19 +80,15 @@ public class DecryptingTranslogTransferManager extends TranslogTransferManager {
      *
      * @param transferSnapshot the snapshot to transfer
      * @param translogTransferListener the transfer listener
-     * @param cryptoMetadata the crypto metadata for SSE-KMS
      * @return true if transfer succeeded
      * @throws IOException if transfer fails
      */
     @Override
-    public boolean transferSnapshot(
-        TransferSnapshot transferSnapshot,
-        TranslogTransferListener translogTransferListener,
-        CryptoMetadata cryptoMetadata
-    ) throws IOException {
+    public boolean transferSnapshot(TransferSnapshot transferSnapshot, TranslogTransferListener translogTransferListener)
+        throws IOException {
         TransferSnapshot decryptingSnapshot = new DecryptingTransferSnapshot(transferSnapshot, keyResolver, translogUUID, cryptoFactory);
 
         // Call parent with decryption wrapper
-        return super.transferSnapshot(decryptingSnapshot, translogTransferListener, cryptoMetadata);
+        return super.transferSnapshot(decryptingSnapshot, translogTransferListener);
     }
 }

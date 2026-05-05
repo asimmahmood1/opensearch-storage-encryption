@@ -4,7 +4,6 @@
  */
 package org.opensearch.index.store.block_loader;
 
-import static org.opensearch.index.store.block_loader.DirectIOReaderUtil.directIOReadAligned;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_MASK;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE;
 import static org.opensearch.index.store.bufferpoolfs.StaticConfigs.CACHE_BLOCK_SIZE_POWER;
@@ -22,13 +21,15 @@ import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.CryptoDirectoryFactory;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.cipher.MemorySegmentDecryptor;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.pool.Pool;
+import org.opensearch.index.store.block_loader.IOBackendStrategy;
 
 /**
  * A {@link BlockLoader} implementation that loads encrypted file blocks using Direct I/O
@@ -44,42 +45,36 @@ import org.opensearch.index.store.pool.Pool;
  * <li>Automatic in-place decryption of loaded blocks</li>
  * <li>Memory pool integration for efficient buffer management</li>
  * <li>Block-aligned operations for optimal storage performance</li>
- * <li>Cached FileChannels via {@link FileChannelCache} to avoid per-load open/close overhead</li>
  * </ul>
  *
  * @opensearch.internal
  */
 @SuppressWarnings("preview")
-public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySegment> {
+public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedByteBuffer> {
     private static final Logger LOGGER = LogManager.getLogger(CryptoDirectIOBlockLoader.class);
 
     private final KeyResolver keyResolver;
-    private final Pool<RefCountedMemorySegment> segmentPool;
+    private final Pool<RefCountedByteBuffer> segmentPool;
     private final EncryptionMetadataCache encryptionMetadataCache;
-    private final FileChannelCache fileChannelCache;
 
     /**
      * Constructs a new CryptoDirectIOBlockLoader with the specified memory pool and key resolver.
      *
      * @param segmentPool the memory segment pool for acquiring buffer space
      * @param keyResolver the resolver for obtaining encryption keys and initialization vectors
-     * @param encryptionMetadataCache cache for encryption metadata
-     * @param fileChannelCache node-level cache of FileChannels bounded by max open FDs
      */
     public CryptoDirectIOBlockLoader(
-        Pool<RefCountedMemorySegment> segmentPool,
+        Pool<RefCountedByteBuffer> segmentPool,
         KeyResolver keyResolver,
-        EncryptionMetadataCache encryptionMetadataCache,
-        FileChannelCache fileChannelCache
+        EncryptionMetadataCache encryptionMetadataCache
     ) {
         this.segmentPool = segmentPool;
         this.keyResolver = keyResolver;
         this.encryptionMetadataCache = encryptionMetadataCache;
-        this.fileChannelCache = fileChannelCache;
     }
 
     @Override
-    public RefCountedMemorySegment[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
+    public RefCountedByteBuffer[] load(Path filePath, long startOffset, long blockCount, long poolTimeoutMs) throws Exception {
         if (!Files.exists(filePath)) {
             throw new NoSuchFileException(filePath.toString());
         }
@@ -92,18 +87,23 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             throw new IllegalArgumentException("blockCount must be positive: " + blockCount);
         }
 
-        RefCountedMemorySegment[] result = new RefCountedMemorySegment[(int) blockCount];
+        RefCountedByteBuffer[] result = new RefCountedByteBuffer[(int) blockCount];
         long readLength = blockCount << CACHE_BLOCK_SIZE_POWER;
-        String normalizedPath = filePath.toAbsolutePath().normalize().toString();
 
-        try (Arena arena = Arena.ofConfined(); RefCountedChannel ref = fileChannelCache.acquire(normalizedPath)) {
-            MemorySegment readBytes = directIOReadAligned(ref.channel(), filePath, startOffset, readLength, arena);
+        // Get filesystem block size for Direct I/O alignment
+        // EBS: typically 4KB-8KB, EFS/NFS: typically 1MB
+        int blockSize = Math.toIntExact(Files.getFileStore(filePath).getBlockSize());
+
+        try (Arena arena = Arena.ofConfined()) {
+            IOBackendStrategy backend = CryptoDirectoryFactory.getActiveIOBackend();
+            MemorySegment readBytes = backend.read(filePath, startOffset, readLength, arena, blockSize);
             long bytesRead = readBytes.byteSize();
 
+            String normalizedPath = filePath.toAbsolutePath().normalize().toString();
             byte[] masterKey = keyResolver.getDataKey().getEncoded();
 
             // Get footer from disk and load metadata (footer + derived key) atomically into cache
-            EncryptionFooter footer = readFooterFromDisk(normalizedPath, filePath, masterKey);
+            EncryptionFooter footer = readFooterFromDisk(filePath, masterKey);
 
             // Get or create metadata atomically - ensures footer and key are always consistent
             var metadata = encryptionMetadataCache.getOrLoadMetadata(normalizedPath, footer, masterKey);
@@ -115,12 +115,12 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                 .decryptInPlaceFrameBased(
                     readBytes.address(),
                     readBytes.byteSize(),
-                    fileKey,
-                    masterKey,
-                    messageId,
-                    EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE,
-                    startOffset,
-                    normalizedPath,
+                    fileKey,                                    // Derived file key (matches write path)
+                    masterKey,                                  // Master key for IV computation
+                    messageId,                                  // Message ID from footer
+                    org.opensearch.index.store.footer.EncryptionMetadataTrailer.DEFAULT_FRAME_SIZE, // Frame size
+                    startOffset,                                 // File offset
+                    filePath.toAbsolutePath().normalize().toString(),
                     encryptionMetadataCache
                 );
 
@@ -133,7 +133,9 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             try {
                 while (blockIndex < blockCount && bytesCopied < bytesRead) {
-                    RefCountedMemorySegment handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+                    // Use caller-specified timeout (5s for critical loads, 50ms for prefetch)
+                    RefCountedByteBuffer handle = segmentPool.tryAcquire(poolTimeoutMs, TimeUnit.MILLISECONDS);
+
                     MemorySegment pooled = handle.segment();
 
                     int remaining = (int) (bytesRead - bytesCopied);
@@ -143,9 +145,10 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
                         MemorySegment.copy(readBytes, bytesCopied, pooled, 0, toCopy);
                     }
 
-                    result[blockIndex++] = handle;
+                    result[blockIndex++] = handle;  // Store the handle, not the segment
                     bytesCopied += toCopy;
                 }
+
             } catch (InterruptedException e) {
                 releaseHandles(result, blockIndex);
                 Thread.currentThread().interrupt();
@@ -156,6 +159,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
             }
 
             return result;
+
         } catch (NoSuchFileException e) {
             throw e;
         } catch (Exception e) {
@@ -164,7 +168,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private void releaseHandles(RefCountedMemorySegment[] handles, int upTo) {
+    private void releaseHandles(RefCountedByteBuffer[] handles, int upTo) {
         for (int i = 0; i < upTo; i++) {
             if (handles[i] != null) {
                 handles[i].close();
@@ -172,14 +176,16 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
     }
 
-    private EncryptionFooter readFooterFromDisk(String normalizedPath, Path filePath, byte[] masterKey) throws IOException {
+    private EncryptionFooter readFooterFromDisk(Path filePath, byte[] masterKey) throws IOException {
+        String normalizedPath = filePath.toAbsolutePath().normalize().toString();
+
         // Check cache first for fast path
         EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedPath);
         if (cachedFooter != null) {
             return cachedFooter;
         }
 
-        // Cache miss - read from disk using a buffered channel (footer reads are small, no O_DIRECT needed)
+        // Cache miss - read from disk
         try (FileChannel channel = FileChannel.open(filePath, StandardOpenOption.READ)) {
             long fileSize = channel.size();
             if (fileSize < EncryptionMetadataTrailer.MIN_FOOTER_SIZE) {
@@ -193,6 +199,7 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
 
             // Check if this is an OSEF file
             if (!isValidOSEFFile(minFooterBytes)) {
+                // Not an OSEF file
                 throw new IOException("Not an OSEF file -" + filePath);
             }
 
@@ -212,4 +219,5 @@ public class CryptoDirectIOBlockLoader implements BlockLoader<RefCountedMemorySe
         }
         return true;
     }
+
 }

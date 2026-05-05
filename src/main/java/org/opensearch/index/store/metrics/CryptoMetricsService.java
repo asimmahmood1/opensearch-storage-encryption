@@ -21,19 +21,19 @@ public class CryptoMetricsService {
     private final MetricsRegistry metricsRegistry;
     private final Histogram poolStatsHistogram;
     private final Histogram cacheStatsHistogram;
-    private final Histogram fdCacheStatsHistogram;
+    private final Histogram prefetchStatsHistogram;
     private final Counter errorCounter;
 
     // Metric names
     private static final String POOL_STATS_NAME = "crypto.pool.stats";
     private static final String CACHE_STATS_NAME = "crypto.cache.stats";
-    private static final String FD_CACHE_STATS_NAME = "crypto.fd_cache.stats";
+    private static final String PREFETCH_STATS_NAME = "crypto.prefetch.stats";
     private static final String ERROR_COUNTER_NAME = "crypto.error.total";
 
     // Metric descriptions
     private static final String POOL_STATS_DESC = "Crypto Pool statistics";
     private static final String CACHE_STATS_DESC = "Crypto Cache statistics";
-    private static final String FD_CACHE_STATS_DESC = "FileChannel cache statistics";
+    private static final String PREFETCH_STATS_DESC = "Crypto Prefetch statistics";
     private static final String ERROR_COUNTER_DESC = "Total crypto operation errors";
 
     // Units
@@ -56,7 +56,7 @@ public class CryptoMetricsService {
         this.errorCounter = createCounter(ERROR_COUNTER_NAME, ERROR_COUNTER_DESC, COUNT_UNIT);
         this.poolStatsHistogram = createHistogram(POOL_STATS_NAME, POOL_STATS_DESC, COUNT_UNIT);
         this.cacheStatsHistogram = createHistogram(CACHE_STATS_NAME, CACHE_STATS_DESC, COUNT_UNIT);
-        this.fdCacheStatsHistogram = createHistogram(FD_CACHE_STATS_NAME, FD_CACHE_STATS_DESC, COUNT_UNIT);
+        this.prefetchStatsHistogram = createHistogram(PREFETCH_STATS_NAME, PREFETCH_STATS_DESC, COUNT_UNIT);
     }
 
     /**
@@ -89,16 +89,18 @@ public class CryptoMetricsService {
      * @param utilization utilization percentage (0-100)
      * @param allocation allocation percentage (0-100)
      */
-    public void recordPoolStats(SegmentType segmentType, int maxSegments, int allocated, int free, double utilization, double allocation) {
+    public void recordPoolStats(SegmentType segmentType, int maxSegments, int allocatedSegments, long allocatedBytes, long zombieBytes, double utilization, long stallCount, long gcTriggerCount) {
         if (poolStatsHistogram == null)
             return;
 
         Tags baseTags = Tags.create().addTag("segment_type", segmentType.getValue());
         poolStatsHistogram.record(maxSegments, baseTags.addTag(STAT_TYPE_TAG, "max"));
-        poolStatsHistogram.record(allocated, baseTags.addTag(STAT_TYPE_TAG, "allocated"));
-        poolStatsHistogram.record(free, baseTags.addTag(STAT_TYPE_TAG, "free"));
+        poolStatsHistogram.record(allocatedSegments, baseTags.addTag(STAT_TYPE_TAG, "allocated_segments"));
+        poolStatsHistogram.record(allocatedBytes, baseTags.addTag(STAT_TYPE_TAG, "allocated_bytes"));
+        poolStatsHistogram.record(zombieBytes, baseTags.addTag(STAT_TYPE_TAG, "zombie_bytes"));
         poolStatsHistogram.record(utilization, baseTags.addTag(STAT_TYPE_TAG, "utilization"));
-        poolStatsHistogram.record(allocation, baseTags.addTag(STAT_TYPE_TAG, "allocation"));
+        poolStatsHistogram.record(stallCount, baseTags.addTag(STAT_TYPE_TAG, "stall_count"));
+        poolStatsHistogram.record(gcTriggerCount, baseTags.addTag(STAT_TYPE_TAG, "gc_trigger_count"));
     }
 
     /**
@@ -125,22 +127,24 @@ public class CryptoMetricsService {
     }
 
     /**
-     * Records FileChannel cache statistics.
-     * @param size current number of cached channels
-     * @param hits hit count
-     * @param misses miss count
-     * @param hitRate hit rate percentage (0-100)
-     * @param evictions eviction count
+     * Records prefetch statistics as separate time series.
+     * @param calls number of loadMissingBlocks calls
+     * @param requested total blocks requested
+     * @param loaded total blocks loaded
+     * @param deduped total blocks deduped
+     * @param cacheHit total cache hits during prefetch
+     * @param inflight current inflight count
      */
-    public void recordFdCacheStats(long size, long hits, long misses, double hitRate, long evictions) {
-        if (fdCacheStatsHistogram == null)
+    public void recordPrefetchStats(long calls, long requested, long loaded, long deduped, long cacheHit, int inflight) {
+        if (prefetchStatsHistogram == null)
             return;
 
-        fdCacheStatsHistogram.record(size, Tags.create().addTag(STAT_TYPE_TAG, "size"));
-        fdCacheStatsHistogram.record(hits, Tags.create().addTag(STAT_TYPE_TAG, "hits"));
-        fdCacheStatsHistogram.record(misses, Tags.create().addTag(STAT_TYPE_TAG, "misses"));
-        fdCacheStatsHistogram.record(hitRate, Tags.create().addTag(STAT_TYPE_TAG, "hit_rate"));
-        fdCacheStatsHistogram.record(evictions, Tags.create().addTag(STAT_TYPE_TAG, "evictions"));
+        prefetchStatsHistogram.record(calls, Tags.create().addTag(STAT_TYPE_TAG, "calls"));
+        prefetchStatsHistogram.record(requested, Tags.create().addTag(STAT_TYPE_TAG, "requested"));
+        prefetchStatsHistogram.record(loaded, Tags.create().addTag(STAT_TYPE_TAG, "loaded"));
+        prefetchStatsHistogram.record(deduped, Tags.create().addTag(STAT_TYPE_TAG, "deduped"));
+        prefetchStatsHistogram.record(cacheHit, Tags.create().addTag(STAT_TYPE_TAG, "cache_hit"));
+        prefetchStatsHistogram.record(inflight, Tags.create().addTag(STAT_TYPE_TAG, "inflight"));
     }
 
     /**

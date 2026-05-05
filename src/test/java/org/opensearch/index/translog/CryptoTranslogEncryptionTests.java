@@ -7,6 +7,9 @@ package org.opensearch.index.translog;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -34,7 +37,6 @@ import org.opensearch.index.store.key.MasterKeyHealthMonitor;
 import org.opensearch.index.store.key.NodeLevelKeyCache;
 import org.opensearch.index.store.key.ShardCacheKey;
 import org.opensearch.index.store.key.ShardKeyResolverRegistry;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
@@ -42,7 +44,7 @@ import org.opensearch.transport.client.IndicesAdminClient;
 /**
  * Verify that translog data encryption actually works.
  */
-public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
+public class CryptoTranslogEncryptionTests {
 
     private static final Logger logger = LogManager.getLogger(CryptoTranslogEncryptionTests.class);
 
@@ -63,10 +65,9 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         resolverCache.put(new ShardCacheKey(indexUuid, shardId, "test-index"), resolver);
     }
 
-    @Override
+    @org.junit.Before
     @SuppressForbidden(reason = "Creating temp directory for test purposes")
     public void setUp() throws Exception {
-        super.setUp();
         tempDir = Files.createTempDirectory("crypto-translog-encryption-test");
 
         // Clear the ShardKeyResolverRegistry cache before each test
@@ -138,16 +139,16 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
         registerResolver(testIndexUuid, 0, keyResolver);
     }
 
-    @Override
+    @org.junit.After
     public void tearDown() throws Exception {
         // Reset singletons to prevent test pollution
         MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         // Clear the ShardKeyResolverRegistry cache
         ShardKeyResolverRegistry.clearCache();
-        super.tearDown();
     }
 
+    @org.junit.Test
     public void testTranslogDataIsActuallyEncrypted() throws IOException {
         String testTranslogUUID = "test-encryption-uuid";
         CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);
@@ -213,6 +214,7 @@ public class CryptoTranslogEncryptionTests extends OpenSearchTestCase {
     /**
      * Verify read/write round trip works correctly.
      */
+    @org.junit.Test
     public void testTranslogEncryptionDecryptionRoundTrip() throws IOException {
         String testTranslogUUID = "test-roundtrip-uuid";
         CryptoChannelFactory channelFactory = new CryptoChannelFactory(keyResolver, testTranslogUUID);

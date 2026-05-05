@@ -4,6 +4,10 @@
  */
 package org.opensearch.index.store.read_ahead.impl;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -18,14 +22,16 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.After;
 import org.junit.Before;
+import org.junit.Test;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 import org.opensearch.index.store.read_ahead.Worker;
-import org.opensearch.test.OpenSearchTestCase;
 
-public class WindowedReadAheadContextTests extends OpenSearchTestCase {
+public class WindowedReadAheadContextTests {
 
-    private static final int CACHE_BLOCK_SIZE = 8192; // From CACHE_BLOCK_SIZE_POWER = 13
+    private static int CACHE_BLOCK_SIZE;
     private static final Path TEST_PATH = Paths.get("/test/file.dat");
     private static final long FILE_SIZE = 1024 * 1024; // 1MB
 
@@ -38,7 +44,9 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+        StaticConfigs.resetForTesting();
+        StaticConfigs.init(8192);
+        CACHE_BLOCK_SIZE = StaticConfigs.CACHE_BLOCK_SIZE;
         mockWorker = mock(Worker.class);
         @SuppressWarnings("unchecked")
         BlockCache<AutoCloseable> cache = (BlockCache<AutoCloseable>) mock(BlockCache.class);
@@ -53,6 +61,11 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
         when(mockWorker.getQueueSize()).thenReturn(0);
     }
 
+    @After
+    public void tearDown() {
+        StaticConfigs.resetForTesting();
+    }
+
     private WindowedReadAheadContext createContext(long fileLength) {
         return WindowedReadAheadContext.build(TEST_PATH, fileLength, mockWorker, mockBlockCache, config, mockSignalCallback);
     }
@@ -64,7 +77,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests that context can be created with valid parameters.
      */
-    public void testContextCreation() {
+    @Test
+    public void ContextCreation() {
         context = createContext(FILE_SIZE);
 
         assertNotNull(context);
@@ -75,11 +89,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests that cache hits do not trigger readahead.
      */
-    public void testCacheHitDoesNotTrigger() {
+    @Test
+    public void CacheHitDoesNotTrigger() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Simulate cache hit
-        context.onAccess(0, true);
+        runOnSearchThread(() -> context.onAccess(0, true));
 
         assertFalse("Cache hit should not queue work", context.hasQueuedWork());
         verify(mockSignalCallback, never()).run();
@@ -88,11 +103,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests that cache miss triggers readahead immediately (no batching threshold).
      */
-    public void testCacheMissTriggersImmediate() {
+    @Test
+    public void CacheMissTriggersImmediate() throws Exception {
         context = createContext(FILE_SIZE);
 
         // First miss should trigger immediately
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
 
         // Should have queued work and signaled
         assertTrue("Cache miss should queue work", context.hasQueuedWork());
@@ -102,13 +118,14 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests sequential misses trigger readahead.
      */
-    public void testSequentialMisses() {
+    @Test
+    public void SequentialMisses() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Sequential misses
-        context.onAccess(0, false);
-        context.onAccess(CACHE_BLOCK_SIZE, false);
-        context.onAccess(2 * CACHE_BLOCK_SIZE, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
+        runOnSearchThread(() -> context.onAccess(CACHE_BLOCK_SIZE, false));
+        runOnSearchThread(() -> context.onAccess(2 * CACHE_BLOCK_SIZE, false));
 
         assertTrue("Sequential misses should queue work", context.hasQueuedWork());
         // Wake is idempotent - may be called 1-3 times depending on timing
@@ -118,11 +135,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests processQueue schedules work with worker.
      */
-    public void testProcessQueueSchedulesWork() {
+    @Test
+    public void ProcessQueueSchedulesWork() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Trigger readahead
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
 
         // Process the queue
         boolean processed = context.processQueue();
@@ -134,7 +152,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests processQueue returns false when no work queued.
      */
-    public void testProcessQueueNoWork() {
+    @Test
+    public void ProcessQueueNoWork() {
         context = createContext(FILE_SIZE);
 
         // No misses, no work
@@ -147,7 +166,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests global pause prevents readahead.
      */
-    public void testGlobalPausePreventsReadahead() {
+    @Test
+    public void GlobalPausePreventsReadahead() {
         when(mockWorker.isReadAheadPaused()).thenReturn(true);
         context = createContext(FILE_SIZE);
 
@@ -161,7 +181,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests queue pressure drops backlog.
      */
-    public void testQueuePressureDropsBacklog() {
+    @Test
+    public void QueuePressureDropsBacklog() throws Exception {
         // Simulate high queue pressure (>75%)
         when(mockWorker.getQueueSize()).thenReturn(80);
         when(mockWorker.getQueueCapacity()).thenReturn(100);
@@ -169,7 +190,7 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
         context = createContext(FILE_SIZE);
 
         // Trigger readahead
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
         assertTrue(context.hasQueuedWork());
 
         // Process should drop backlog due to pressure
@@ -182,13 +203,14 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests worker rejection drops backlog.
      */
-    public void testWorkerRejectionDropsBacklog() {
+    @Test
+    public void WorkerRejectionDropsBacklog() throws Exception {
         when(mockWorker.schedule(any(), any(), anyLong(), anyLong())).thenReturn(false);
 
         context = createContext(FILE_SIZE);
 
         // Trigger readahead
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
         assertTrue(context.hasQueuedWork());
 
         // Process should handle rejection
@@ -201,16 +223,19 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests idempotent wake - multiple misses don't storm callback.
      */
-    public void testIdempotentWake() {
+    @Test
+    public void IdempotentWake() throws Exception {
         AtomicInteger callbackCount = new AtomicInteger(0);
         Runnable countingCallback = callbackCount::incrementAndGet;
 
         context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, countingCallback);
 
         // Multiple rapid misses
-        for (int i = 0; i < 10; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, false);
-        }
+        runOnSearchThread(() -> {
+            for (int i = 0; i < 10; i++) {
+                context.onAccess(i * CACHE_BLOCK_SIZE, false);
+            }
+        });
 
         // Should wake at least once, but far fewer than 10 times due to idempotent gate
         int wakeCount = callbackCount.get();
@@ -221,7 +246,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests context close stops readahead.
      */
-    public void testContextClose() {
+    @Test
+    public void ContextClose() {
         context = createContext(FILE_SIZE);
 
         assertTrue(context.isReadAheadEnabled());
@@ -238,11 +264,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests reset clears queued work.
      */
-    public void testReset() {
+    @Test
+    public void Reset() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Queue some work
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
         assertTrue(context.hasQueuedWork());
 
         // Reset should clear
@@ -254,7 +281,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests cancel delegates to worker.
      */
-    public void testCancel() {
+    @Test
+    public void Cancel() {
         context = createContext(FILE_SIZE);
 
         context.cancel();
@@ -265,11 +293,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests triggerReadahead manually queues work.
      */
-    public void testTriggerReadahead() {
+    @Test
+    public void TriggerReadahead() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Manually trigger readahead
-        context.triggerReadahead(0);
+        runOnSearchThread(() -> context.triggerReadahead(0));
 
         assertTrue("Manual trigger should queue work", context.hasQueuedWork());
         verify(mockSignalCallback, times(1)).run();
@@ -278,11 +307,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests triggerReadahead respects global pause.
      */
-    public void testTriggerReadaheadRespectsPause() {
+    @Test
+    public void TriggerReadaheadRespectsPause() throws Exception {
         when(mockWorker.isReadAheadPaused()).thenReturn(true);
         context = createContext(FILE_SIZE);
 
-        context.triggerReadahead(0);
+        runOnSearchThread(() -> context.triggerReadahead(0));
 
         assertFalse("Trigger should respect global pause", context.hasQueuedWork());
         verify(mockSignalCallback, never()).run();
@@ -291,11 +321,12 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests null signal callback is handled gracefully.
      */
-    public void testNullSignalCallback() {
+    @Test
+    public void NullSignalCallback() throws Exception {
         context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, null);
 
         // Should not throw
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
 
         // Work is still queued even without callback
         assertTrue("Work should be queued even with null callback", context.hasQueuedWork());
@@ -304,7 +335,8 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests custom config is respected.
      */
-    public void testCustomConfig() {
+    @Test
+    public void CustomConfig() {
         WindowedReadAheadConfig customConfig = WindowedReadAheadConfig
             .of(
                 2,  // initialWindow
@@ -321,15 +353,18 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests policy integration - window grows on sequential access.
      */
-    public void testPolicyWindowGrowth() {
+    @Test
+    public void PolicyWindowGrowth() throws Exception {
         context = createContext(FILE_SIZE);
 
         int initialWindow = context.policy().currentWindow();
 
         // Sequential access should grow window
-        for (int i = 0; i < 10; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, false);
-        }
+        runOnSearchThread(() -> {
+            for (int i = 0; i < 10; i++) {
+                context.onAccess(i * CACHE_BLOCK_SIZE, false);
+            }
+        });
 
         int newWindow = context.policy().currentWindow();
         assertTrue("Window should grow on sequential access", newWindow >= initialWindow);
@@ -338,13 +373,14 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests hasQueuedWork reflects pending work accurately.
      */
-    public void testHasQueuedWorkAccuracy() {
+    @Test
+    public void HasQueuedWorkAccuracy() throws Exception {
         context = createContext(FILE_SIZE);
 
         assertFalse(context.hasQueuedWork());
 
         // Queue work
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
         assertTrue(context.hasQueuedWork());
 
         // Process all work
@@ -358,38 +394,41 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests large file sizes are handled correctly.
      */
-    public void testLargeFile() {
+    @Test
+    public void LargeFile() throws Exception {
         long largeFileSize = 10L * 1024 * 1024 * 1024; // 10GB
         context = createContext(largeFileSize);
 
         assertNotNull(context);
 
         // Should handle large offsets
-        context.onAccess(largeFileSize - CACHE_BLOCK_SIZE, false);
+        runOnSearchThread(() -> context.onAccess(largeFileSize - CACHE_BLOCK_SIZE, false));
         assertTrue(context.hasQueuedWork());
     }
 
     /**
      * Tests zero-length file is handled.
      */
-    public void testZeroLengthFile() {
+    @Test
+    public void ZeroLengthFile() throws Exception {
         context = createContext(0);
 
         assertNotNull(context);
 
         // Access should not crash
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
     }
 
     /**
      * Tests processQueue clears wake flag when all work done.
      */
-    public void testWakeFlagClearedWhenDone() {
+    @Test
+    public void WakeFlagClearedWhenDone() throws Exception {
         AtomicInteger wakeCount = new AtomicInteger(0);
         context = WindowedReadAheadContext.build(TEST_PATH, FILE_SIZE, mockWorker, mockBlockCache, config, wakeCount::incrementAndGet);
 
         // Queue small amount of work
-        context.onAccess(0, false);
+        runOnSearchThread(() -> context.onAccess(0, false));
         int wakesAfterFirst = wakeCount.get();
         assertTrue("Should wake on first access", wakesAfterFirst >= 1);
 
@@ -402,19 +441,86 @@ public class WindowedReadAheadContextTests extends OpenSearchTestCase {
     /**
      * Tests processQueue keeps wake flag if more work remains.
      */
-    public void testWakeFlagKeptWhenWorkRemains() {
+    @Test
+    public void WakeFlagKeptWhenWorkRemains() throws Exception {
         context = createContext(FILE_SIZE);
 
         // Queue lots of work (more than MAX_BLOCKS_PER_SUBMISSION = 64)
-        context.onAccess(0, false);
-        for (int i = 0; i < 100; i++) {
-            context.onAccess(i * CACHE_BLOCK_SIZE, false);
-        }
+        runOnSearchThread(() -> {
+            context.onAccess(0, false);
+            for (int i = 0; i < 100; i++) {
+                context.onAccess(i * CACHE_BLOCK_SIZE, false);
+            }
+        });
 
         // Process once (should only process up to 64 blocks)
         context.processQueue();
 
         // Should still have work queued
         assertTrue("Should have remaining work after partial processing", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that read-ahead is allowed on search thread pool.
+     */
+    public void testReadAheadAllowedOnSearchThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][search][T#1]", () -> context.onAccess(0, false));
+        assertTrue("search thread should trigger read-ahead", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that read-ahead is allowed on index_searcher thread pool.
+     */
+    public void testReadAheadAllowedOnIndexSearcherThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][index_searcher][T#2]", () -> context.onAccess(0, false));
+        assertTrue("index_searcher thread should trigger read-ahead", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that read-ahead is blocked on generic thread pool.
+     */
+    public void testReadAheadBlockedOnGenericThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][generic][T#3]", () -> context.onAccess(0, false));
+        assertFalse("generic thread should not trigger read-ahead", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that read-ahead is blocked on flush thread pool.
+     */
+    public void testReadAheadBlockedOnFlushThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][flush][T#1]", () -> context.onAccess(0, false));
+        assertFalse("flush thread should not trigger read-ahead", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that read-ahead is blocked on refresh thread pool.
+     */
+    public void testReadAheadBlockedOnRefreshThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][refresh][T#1]", () -> context.onAccess(0, false));
+        assertFalse("refresh thread should not trigger read-ahead", context.hasQueuedWork());
+    }
+
+    /**
+     * Tests that triggerReadahead is blocked on non-search threads.
+     */
+    public void testTriggerReadaheadBlockedOnGenericThread() throws Exception {
+        context = createContext(FILE_SIZE);
+        runOnNamedThread("opensearch[node1][generic][T#3]", () -> context.triggerReadahead(0));
+        assertFalse("generic thread should not trigger manual read-ahead", context.hasQueuedWork());
+    }
+
+    private static void runOnSearchThread(Runnable runnable) throws Exception {
+        runOnNamedThread("opensearch[node1][search][T#1]", runnable);
+    }
+
+    private static void runOnNamedThread(String name, Runnable action) throws Exception {
+        Thread t = new Thread(action, name);
+        t.start();
+        t.join();
     }
 }

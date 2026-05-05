@@ -14,23 +14,23 @@ import static org.mockito.Mockito.when;
 import java.lang.reflect.Field;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.opensearch.index.store.pool.SegmentType;
 import org.opensearch.telemetry.metrics.Counter;
 import org.opensearch.telemetry.metrics.Histogram;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
 import org.opensearch.telemetry.metrics.tags.Tags;
-import org.opensearch.test.OpenSearchTestCase;
 
-public class CryptoMetricsServiceTests extends OpenSearchTestCase {
+public class CryptoMetricsServiceTests {
 
     private MetricsRegistry mockMetricsRegistry;
     private Histogram mockPoolHistogram;
     private Histogram mockCacheHistogram;
+    private Histogram mockPrefetchHistogram;
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         resetSingleton();
 
         mockMetricsRegistry = mock(MetricsRegistry.class);
@@ -40,12 +40,13 @@ public class CryptoMetricsServiceTests extends OpenSearchTestCase {
         when(mockMetricsRegistry.createCounter(any(), any(), any())).thenReturn(mock(Counter.class));
         when(mockMetricsRegistry.createHistogram(eq("crypto.pool.stats"), any(), any())).thenReturn(mockPoolHistogram);
         when(mockMetricsRegistry.createHistogram(eq("crypto.cache.stats"), any(), any())).thenReturn(mockCacheHistogram);
+        mockPrefetchHistogram = mock(Histogram.class);
+        when(mockMetricsRegistry.createHistogram(eq("crypto.prefetch.stats"), any(), any())).thenReturn(mockPrefetchHistogram);
     }
 
     @After
     public void tearDown() throws Exception {
         resetSingleton();
-        super.tearDown();
     }
 
     private void resetSingleton() throws Exception {
@@ -54,21 +55,32 @@ public class CryptoMetricsServiceTests extends OpenSearchTestCase {
         instanceField.set(null, null);
     }
 
-    public void testRecordPoolStats() {
+    @Test
+    public void RecordPoolStats() {
         CryptoMetricsService.initialize(mockMetricsRegistry);
         CryptoMetricsService service = CryptoMetricsService.getInstance();
 
-        service.recordPoolStats(SegmentType.PRIMARY, 100, 80, 20, 80.0, 75.0);
+        service.recordPoolStats(SegmentType.PRIMARY, 100, 80, 640L, 0L, 0.8, 0L, 0L);
 
-        verify(mockPoolHistogram, times(5)).record(any(Double.class), any(Tags.class));
+        verify(mockPoolHistogram, times(7)).record(any(Double.class), any(Tags.class));
     }
 
-    public void testRecordCacheStats() {
+    @Test
+    public void RecordCacheStats() {
         CryptoMetricsService.initialize(mockMetricsRegistry);
         CryptoMetricsService service = CryptoMetricsService.getInstance();
 
         service.recordCacheStats(1000L, 800L, 200L, 80.0, 1000L, 50L, 15.5);
 
         verify(mockCacheHistogram, times(7)).record(any(Double.class), any(Tags.class));
+    }
+
+    public void testRecordPrefetchStats() {
+        CryptoMetricsService.initialize(mockMetricsRegistry);
+        CryptoMetricsService service = CryptoMetricsService.getInstance();
+
+        service.recordPrefetchStats(10L, 100L, 80L, 15L, 5L, 3);
+
+        verify(mockPrefetchHistogram, times(6)).record(any(Double.class), any(Tags.class));
     }
 }

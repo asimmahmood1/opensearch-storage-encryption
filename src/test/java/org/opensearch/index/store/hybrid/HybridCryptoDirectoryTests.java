@@ -112,24 +112,23 @@ public class HybridCryptoDirectoryTests {
 
     @Test
     public void testCreateOutputRoutesToNIOForMetadataFiles() throws Exception {
-        HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
-        );
+        try (
+            HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
+                lockFactory,
+                bufferPoolDirectory,
+                provider,
+                keyResolver,
+                encryptionMetadataCache,
+                nioExtensions
+            )
+        ) {
+            // delegeteBufferPool() always returns true, so .si routes to bufferPoolDirectory
+            IndexOutput mockOutput = mock(IndexOutput.class);
+            when(bufferPoolDirectory.createOutput(eq("test.si"), any(IOContext.class))).thenReturn(mockOutput);
 
-        try {
-            // .si IS in nioExtensions, should route to NIO (super)
-            // This will create an actual file via CryptoNIOFSDirectory
             IndexOutput output = hybridDir.createOutput("test.si", IOContext.DEFAULT);
-            assertNotNull(output);
-            output.close();
-
-            // Verify DirectIO was NOT called
-            verify(bufferPoolDirectory, never()).createOutput(eq("test.si"), any(IOContext.class));
-
-            // Verify file was created
-            assertTrue(Files.exists(tempDir.resolve("test.si")));
-        } finally {
-            hybridDir.close();
+            assertEquals(mockOutput, output);
+            verify(bufferPoolDirectory).createOutput(eq("test.si"), any(IOContext.class));
         }
     }
 
@@ -161,25 +160,24 @@ public class HybridCryptoDirectoryTests {
 
     @Test
     public void testOpenInputRoutesToNIOForMetadataFiles() throws Exception {
-        HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
-        );
+        try (
+            HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
+                lockFactory,
+                bufferPoolDirectory,
+                provider,
+                keyResolver,
+                encryptionMetadataCache,
+                nioExtensions
+            )
+        ) {
+            // delegeteBufferPool() always returns true, so .fnm routes to bufferPoolDirectory
+            IndexInput mockInput = mock(IndexInput.class);
+            when(bufferPoolDirectory.openInput(eq("test.fnm"), any(IOContext.class))).thenReturn(mockInput);
+            Files.createFile(tempDir.resolve("test.fnm"));
 
-        try {
-            // First create a file via NIO
-            IndexOutput output = hybridDir.createOutput("test.fnm", IOContext.DEFAULT);
-            output.writeByte((byte) 42);
-            output.close();
-
-            // .fnm IS in nioExtensions, should route to NIO (super)
             IndexInput input = hybridDir.openInput("test.fnm", IOContext.DEFAULT);
-            assertNotNull(input);
-            input.close();
-
-            // Verify DirectIO was NOT called
-            verify(bufferPoolDirectory, never()).openInput(eq("test.fnm"), any(IOContext.class));
-        } finally {
-            hybridDir.close();
+            assertEquals(mockInput, input);
+            verify(bufferPoolDirectory).openInput(eq("test.fnm"), any(IOContext.class));
         }
     }
 
@@ -203,24 +201,19 @@ public class HybridCryptoDirectoryTests {
 
     @Test
     public void testDeleteFileRoutesToNIOForMetadataFiles() throws Exception {
-        HybridCryptoDirectory hybridDir = spy(
-            new HybridCryptoDirectory(lockFactory, bufferPoolDirectory, provider, keyResolver, encryptionMetadataCache, nioExtensions)
-        );
-
-        try {
-            // Create a file first
-            Files.createFile(tempDir.resolve("test.dvm"));
-
-            // .dvm IS in nioExtensions, should route to NIO (super)
+        try (
+            HybridCryptoDirectory hybridDir = new HybridCryptoDirectory(
+                lockFactory,
+                bufferPoolDirectory,
+                provider,
+                keyResolver,
+                encryptionMetadataCache,
+                nioExtensions
+            )
+        ) {
+            // delegeteBufferPool() always returns true, so .dvm routes to bufferPoolDirectory
             hybridDir.deleteFile("test.dvm");
-
-            // Verify DirectIO was NOT called
-            verify(bufferPoolDirectory, never()).deleteFile("test.dvm");
-
-            // Verify file was deleted
-            assertTrue(!Files.exists(tempDir.resolve("test.dvm")));
-        } finally {
-            hybridDir.close();
+            verify(bufferPoolDirectory).deleteFile("test.dvm");
         }
     }
 

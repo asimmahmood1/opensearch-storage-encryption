@@ -18,11 +18,11 @@ import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
-import org.opensearch.test.OpenSearchTestCase;
 
 @SuppressWarnings("preview")
-public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
+public class MemorySegmentDecryptorTests {
 
     private static final byte[] TEST_KEY = new byte[32]; // 256-bit AES key
     private static final byte[] TEST_IV = new byte[16];  // 128-bit IV
@@ -37,7 +37,6 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         arena = Arena.ofConfined();
     }
 
@@ -46,10 +45,10 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         if (arena != null) {
             arena.close();
         }
-        super.tearDown();
     }
 
-    public void testDecryptInPlaceWithArena() throws Exception {
+    @Test
+    public void DecryptInPlaceWithArena() throws Exception {
         // Encrypt test data first
         Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
@@ -75,7 +74,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testDecryptInPlaceWithGlobalScope() throws Exception {
+    @Test
+    public void DecryptInPlaceWithGlobalScope() throws Exception {
         // Encrypt test data first
         Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
@@ -101,7 +101,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testDecryptSegment() throws Exception {
+    @Test
+    public void DecryptSegment() throws Exception {
         // Encrypt test data first
         Cipher cipher = AesCipherFactory.CIPHER_POOL.get();
         SecretKeySpec keySpec = new SecretKeySpec(TEST_KEY, "AES");
@@ -127,7 +128,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testDecryptWithFileOffset() throws Exception {
+    @Test
+    public void DecryptWithFileOffset() throws Exception {
         long fileOffset = 1024;
 
         // Encrypt test data with offset-aware IV
@@ -162,7 +164,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testDecryptLargeData() throws Exception {
+    @Test
+    public void DecryptLargeData() throws Exception {
         // Test with data larger than default chunk size
         byte[] largeData = new byte[32768]; // 32KB
         new SecureRandom().nextBytes(largeData);
@@ -192,7 +195,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(largeData, decrypted);
     }
 
-    public void testDecryptWithNonAlignedOffset() throws Exception {
+    @Test
+    public void DecryptWithNonAlignedOffset() throws Exception {
         long fileOffset = 17; // Non-aligned offset
 
         // Encrypt with offset
@@ -226,7 +230,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         assertArrayEquals(TEST_DATA, decrypted);
     }
 
-    public void testDecryptEmptyData() throws Exception {
+    @Test
+    public void DecryptEmptyData() throws Exception {
         byte[] emptyData = new byte[0];
 
         // Encrypt empty data
@@ -248,7 +253,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         // Should complete without error
     }
 
-    public void testDecryptMultipleSegments() throws Exception {
+    @Test
+    public void DecryptMultipleSegments() throws Exception {
         int segmentCount = 5;
         byte[][] originalData = new byte[segmentCount][];
         MemorySegment[] segments = new MemorySegment[segmentCount];
@@ -287,7 +293,8 @@ public class MemorySegmentDecryptorTests extends OpenSearchTestCase {
         }
     }
 
-    public void testChunkedDecryption() throws Exception {
+    @Test
+    public void ChunkedDecryption() throws Exception {
         // Test that chunked processing works correctly
         int dataSize = 20000; // Larger than default chunk size
         byte[] testData = new byte[dataSize];

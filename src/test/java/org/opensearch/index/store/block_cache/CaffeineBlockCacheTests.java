@@ -4,10 +4,19 @@
  */
 package org.opensearch.index.store.block_cache;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -16,38 +25,56 @@ import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.Assert.assertThrows;
+import org.junit.After;
 import org.junit.Before;
+import org.junit.Test;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
 import org.opensearch.index.store.block_loader.BlockLoader;
-import org.opensearch.test.OpenSearchTestCase;
 
 import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import org.opensearch.index.store.bufferpoolfs.StaticConfigs;
 
 @SuppressWarnings("unchecked")
 @ThreadLeakFilters(filters = CaffeineThreadLeakFilter.class)
-public class CaffeineBlockCacheTests extends OpenSearchTestCase {
+public class CaffeineBlockCacheTests {
 
     private Cache<BlockCacheKey, BlockCacheValue<String>> caffeineCache;
     private BlockLoader<BlockCacheValue<String>> mockLoader;
     private CaffeineBlockCache<String, BlockCacheValue<String>> blockCache;
+    private ExecutorService defaultExecutor;
     private static final long MAX_BLOCKS = 100;
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+        StaticConfigs.resetForTesting();
+        StaticConfigs.init(8192);
         caffeineCache = Caffeine.newBuilder().maximumSize(MAX_BLOCKS).recordStats().build();
         mockLoader = mock(BlockLoader.class);
-        blockCache = new CaffeineBlockCache<>(caffeineCache, mockLoader, MAX_BLOCKS);
+        defaultExecutor = Executors.newSingleThreadExecutor();
+        blockCache = new CaffeineBlockCache<>(caffeineCache, mockLoader, MAX_BLOCKS, new PrefetchTracker(defaultExecutor));
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        StaticConfigs.resetForTesting();
+        defaultExecutor.shutdown();
+        defaultExecutor.awaitTermination(5, TimeUnit.SECONDS);
     }
 
     /**
      * Tests basic get operation when key is not present.
      */
-    public void testGetReturnsNullForMissingKey() {
+    @Test
+    public void GetReturnsNullForMissingKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         BlockCacheValue<String> result = blockCache.get(key);
@@ -58,7 +85,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests get operation when key is present in cache.
      */
-    public void testGetReturnsValueForPresentKey() {
+    @Test
+    public void GetReturnsValueForPresentKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
 
@@ -72,7 +100,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests put operation adds value to cache.
      */
-    public void testPutAddsValueToCache() {
+    @Test
+    public void PutAddsValueToCache() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
 
@@ -86,7 +115,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad returns cached value without calling loader.
      */
-    public void testGetOrLoadReturnsCachedValue() throws Exception {
+    @Test
+    public void GetOrLoadReturnsCachedValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("cached");
 
@@ -100,7 +130,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad loads value when not cached.
      */
-    public void testGetOrLoadLoadsValueOnCacheMiss() throws Exception {
+    @Test
+    public void GetOrLoadLoadsValueOnCacheMiss() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("loaded");
 
@@ -116,7 +147,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad caches loaded value for future requests.
      */
-    public void testGetOrLoadCachesLoadedValue() throws Exception {
+    @Test
+    public void GetOrLoadCachesLoadedValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("loaded");
 
@@ -135,75 +167,82 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getOrLoad throws exception when loader throws PoolPressureException.
      */
-    public void testGetOrLoadHandlesPoolPressureException() throws Exception {
+    @Test
+    public void GetOrLoadHandlesPoolPressureException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new BlockLoader.PoolPressureException("Pool exhausted"));
 
         // The implementation converts these to UncheckedIOException which then gets
         // caught and rethrown as IOException in the outer catch
-        expectThrows(Exception.class, () -> blockCache.getOrLoad(key));
+        assertThrows(Exception.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests getOrLoad throws exception when loader throws PoolAcquireFailedException.
      */
-    public void testGetOrLoadHandlesPoolAcquireFailedException() throws Exception {
+    @Test
+    public void GetOrLoadHandlesPoolAcquireFailedException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new BlockLoader.PoolAcquireFailedException("Acquire timeout"));
 
-        expectThrows(Exception.class, () -> blockCache.getOrLoad(key));
+        assertThrows(Exception.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests getOrLoad throws exception when loader throws BlockLoadFailedException.
      */
-    public void testGetOrLoadHandlesBlockLoadFailedException() throws Exception {
+    @Test
+    public void GetOrLoadHandlesBlockLoadFailedException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new BlockLoader.BlockLoadFailedException("Load failed"));
 
-        expectThrows(Exception.class, () -> blockCache.getOrLoad(key));
+        assertThrows(Exception.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests getOrLoad throws exception when loader throws NoSuchFileException.
      */
-    public void testGetOrLoadHandlesNoSuchFileException() throws Exception {
+    @Test
+    public void GetOrLoadHandlesNoSuchFileException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/missing.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new NoSuchFileException("/test/missing.dat"));
 
-        expectThrows(Exception.class, () -> blockCache.getOrLoad(key));
+        assertThrows(Exception.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests getOrLoad throws exception when loader throws generic IOException.
      */
-    public void testGetOrLoadHandlesIOException() throws Exception {
+    @Test
+    public void GetOrLoadHandlesIOException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new IOException("I/O error"));
 
-        expectThrows(Exception.class, () -> blockCache.getOrLoad(key));
+        assertThrows(Exception.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests getOrLoad wraps RuntimeException in IOException.
      */
-    public void testGetOrLoadWrapsRuntimeException() throws Exception {
+    @Test
+    public void GetOrLoadWrapsRuntimeException() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new RuntimeException("Unexpected error"));
 
-        expectThrows(IOException.class, () -> blockCache.getOrLoad(key));
+        assertThrows(IOException.class, () -> blockCache.getOrLoad(key));
     }
 
     /**
      * Tests invalidate removes specific key from cache.
      */
-    public void testInvalidateRemovesKey() {
+    @Test
+    public void InvalidateRemovesKey() {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
 
@@ -218,7 +257,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path removes all blocks for that file.
      */
-    public void testInvalidateByPathRemovesAllFileBlocks() {
+    @Test
+    public void InvalidateByPathRemovesAllFileBlocks() {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key1 = new FileBlockCacheKey(path, 0L);
         BlockCacheKey key2 = new FileBlockCacheKey(path, 8192L);
@@ -238,7 +278,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path only removes blocks for that specific file.
      */
-    public void testInvalidateByPathOnlyAffectsSpecifiedFile() {
+    @Test
+    public void InvalidateByPathOnlyAffectsSpecifiedFile() {
         Path path1 = Paths.get("/test/file1.dat");
         Path path2 = Paths.get("/test/file2.dat");
 
@@ -257,7 +298,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests invalidate by path normalizes paths correctly.
      */
-    public void testInvalidateByPathNormalizesPath() {
+    @Test
+    public void InvalidateByPathNormalizesPath() {
         Path normalizedPath = Paths.get("/test/file.dat").toAbsolutePath().normalize();
         Path pathWithDots = Paths.get("/test/./file.dat");
 
@@ -272,7 +314,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests clear removes all entries from cache.
      */
-    public void testClearRemovesAllEntries() {
+    @Test
+    public void ClearRemovesAllEntries() {
         BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
         BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
         BlockCacheKey key3 = new FileBlockCacheKey(Paths.get("/test/file3.dat"), 0L);
@@ -289,9 +332,35 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     }
 
     /**
+     * Tests clearSafely only removes entries with refCount == 1.
+     */
+    @Test
+    public void ClearSafelyOnlyRemovesUnusedEntries() {
+        BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
+        BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
+        BlockCacheKey key3 = new FileBlockCacheKey(Paths.get("/test/file3.dat"), 0L);
+
+        BlockCacheValue<String> value1 = createMockValue("data1");
+        BlockCacheValue<String> value2 = createMockValue("data2");
+        BlockCacheValue<String> value3 = createMockValue("data3");
+
+
+        blockCache.put(key1, value1);
+        blockCache.put(key2, value2);
+        blockCache.put(key3, value3);
+
+        blockCache.clearSafely();
+
+        assertNull("All entries should be cleared", blockCache.get(key1));
+        assertNull("All entries should be cleared", blockCache.get(key2));
+        assertNull("All entries should be cleared", blockCache.get(key3));
+    }
+
+    /**
      * Tests prefetch loads value into cache.
      */
-    public void testPrefetchLoadsValue() throws Exception {
+    @Test
+    public void PrefetchLoadsValue() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("prefetched");
 
@@ -309,7 +378,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests prefetch does not throw exception on failure.
      */
-    public void testPrefetchDoesNotThrowOnFailure() throws Exception {
+    @Test
+    public void PrefetchDoesNotThrowOnFailure() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
 
         when(mockLoader.load(key)).thenThrow(new IOException("Load failed"));
@@ -323,7 +393,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk loads multiple blocks efficiently.
      */
-    public void testLoadBulkLoadsMultipleBlocks() throws Exception {
+    @Test
+    public void LoadBulkLoadsMultipleBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         long startOffset = 0L;
         long blockCount = 3L;
@@ -335,16 +406,16 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        Map<BlockCacheKey, BlockCacheValue<String>> result = blockCache.loadForPrefetch(path, startOffset, blockCount);
+        blockCache.loadAllBlocks(path, startOffset, blockCount);
 
-        assertEquals("Should load 3 blocks", 3, result.size());
         verify(mockLoader, times(1)).load(eq(path), eq(startOffset), eq(blockCount), anyLong());
     }
 
     /**
      * Tests loadBulk caches loaded blocks.
      */
-    public void testLoadBulkCachesLoadedBlocks() throws Exception {
+    @Test
+    public void LoadBulkCachesLoadedBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         long startOffset = 0L;
         long blockCount = 2L;
@@ -353,7 +424,7 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
 
         when(mockLoader.load(eq(path), eq(startOffset), eq(blockCount), anyLong())).thenReturn(loadedValues);
 
-        blockCache.loadForPrefetch(path, startOffset, blockCount);
+        blockCache.loadAllBlocks(path, startOffset, blockCount);
 
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheKey key1 = new FileBlockCacheKey(path, 8192L); // CACHE_BLOCK_SIZE = 8192
@@ -365,7 +436,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests loadBulk does not replace already cached blocks.
      */
-    public void testLoadBulkDoesNotReplaceExistingBlocks() throws Exception {
+    @Test
+    public void LoadBulkDoesNotReplaceExistingBlocks() throws Exception {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheValue<String> existingValue = createMockValue("existing");
@@ -373,66 +445,72 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         // Pre-populate cache
         blockCache.put(key0, existingValue);
 
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { createMockValue("new"), createMockValue("block1") };
+        BlockCacheValue<String> block1Value = createMockValue("block1");
+        when(mockLoader.load(eq(path), eq(8192L), eq(1L), eq(50L))).thenReturn(new BlockCacheValue[] { block1Value });
 
-        when(mockLoader.load(eq(path), eq(0L), eq(2L), anyLong())).thenReturn(loadedValues);
+        blockCache.loadMissingBlocks(path, 0L, 2L);
+        // Wait for async prefetch to complete
+        defaultExecutor.submit(() -> {}).get(5, TimeUnit.SECONDS);
 
-        blockCache.loadForPrefetch(path, 0L, 2L);
-
-        // Should still have existing value
-        BlockCacheValue<String> cached = blockCache.get(key0);
-        assertSame("Should keep existing cached value", existingValue, cached);
+        // Should still have existing value — Caffeine's cache.get doesn't invoke loader for existing keys
+        assertSame("Should keep existing cached value", existingValue, blockCache.get(key0));
+        verify(mockLoader, never()).load(eq(path), eq(0L), eq(1L), anyLong());
+        verify(mockLoader, times(1)).load(eq(path), eq(8192L), eq(1L), eq(50L));
     }
 
     /**
-     * Tests loadBulk releases newly loaded segments that weren't cached.
+     * Tests loadBulk skips already-cached blocks.
      */
-    public void testLoadBulkReleasesUnusedSegments() throws Exception {
+    @Test
+    public void LoadBulkReleasesUnusedSegments() throws Exception {
         Path path = Paths.get("/test/file.dat");
         BlockCacheKey key0 = new FileBlockCacheKey(path, 0L);
         BlockCacheValue<String> existingValue = createMockValue("existing");
-        BlockCacheValue<String> newValue = createMockValue("new");
 
         // Pre-populate cache
         blockCache.put(key0, existingValue);
 
-        BlockCacheValue<String>[] loadedValues = new BlockCacheValue[] { newValue };
+        blockCache.loadMissingBlocks(path, 0L, 1L);
+        // Wait for async prefetch to complete
+        defaultExecutor.submit(() -> {}).get(5, TimeUnit.SECONDS);
 
-        when(mockLoader.load(eq(path), eq(0L), eq(1L), anyLong())).thenReturn(loadedValues);
-
-        blockCache.loadForPrefetch(path, 0L, 1L);
-
-        // Verify decRef was called on the unused segment
-        verify(newValue, times(1)).decRef();
+        // Verify loader was NOT called since block is already cached
+        verify(mockLoader, never()).load(any(Path.class), anyLong(), anyLong(), anyLong());
     }
 
     /**
      * Tests loadForPrefetch throws IOException when loader fails.
      */
-    public void testLoadBulkThrowsIOExceptionOnFailure() throws Exception {
+    @Test
+    public void LoadBulkThrowsIOExceptionOnFailure() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
         when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong())).thenThrow(new IOException("Bulk load failed"));
 
-        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
+        assertThrows(IOException.class, () -> blockCache.loadAllBlocks(path, 0L, 3L));
+        verify(mockLoader, times(1)).load(any(Path.class), anyLong(), anyLong(), anyLong());
     }
 
     /**
      * Tests loadForPrefetch handles PoolPressureException.
      */
-    public void testLoadBulkHandlesPoolPressureException() throws Exception {
+    @Test
+    public void LoadBulkHandlesPoolPressureException() throws Exception {
         Path path = Paths.get("/test/file.dat");
 
-        when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong()))
-            .thenThrow(new BlockLoader.PoolPressureException("Pool exhausted"));
+        when(mockLoader.load(any(Path.class), anyLong(), anyLong(), anyLong())).thenThrow(
+            new BlockLoader.PoolPressureException("Pool exhausted")
+        );
 
-        expectThrows(IOException.class, () -> blockCache.loadForPrefetch(path, 0L, 3L));
+        assertThrows(IOException.class, () -> blockCache.loadAllBlocks(path, 0L, 3L));
+        verify(mockLoader, times(1)).load(any(Path.class), anyLong(), anyLong(), anyLong());
     }
 
     /**
      * Tests cacheStats returns meaningful statistics.
      */
-    public void testCacheStatsReturnsStatistics() throws Exception {
+    @Test
+    public void CacheStatsReturnsStatistics() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
 
@@ -454,7 +532,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests getCache returns underlying Caffeine cache.
      */
-    public void testGetCacheReturnsUnderlyingCache() {
+    @Test
+    public void GetCacheReturnsUnderlyingCache() {
         Cache<BlockCacheKey, BlockCacheValue<String>> underlying = blockCache.getCache();
 
         assertNotNull("Should return cache", underlying);
@@ -464,10 +543,16 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests cache eviction occurs when capacity is exceeded.
      */
-    public void testCacheEvictionOnCapacityExceeded() {
+    @Test
+    public void CacheEvictionOnCapacityExceeded() {
         // Create small cache
         Cache<BlockCacheKey, BlockCacheValue<String>> smallCache = Caffeine.newBuilder().maximumSize(2).build();
-        CaffeineBlockCache<String, BlockCacheValue<String>> limitedCache = new CaffeineBlockCache<>(smallCache, mockLoader, 2);
+        CaffeineBlockCache<String, BlockCacheValue<String>> limitedCache = new CaffeineBlockCache<>(
+            smallCache,
+            mockLoader,
+            2,
+            new PrefetchTracker(defaultExecutor)
+        );
 
         BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
         BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
@@ -488,7 +573,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
     /**
      * Tests concurrent access to cache.
      */
-    public void testConcurrentAccess() throws Exception {
+    @Test
+    public void ConcurrentAccess() throws Exception {
         BlockCacheKey key = new FileBlockCacheKey(Paths.get("/test/file.dat"), 0L);
         BlockCacheValue<String> value = createMockValue("data");
 
@@ -525,7 +611,8 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
      * Note: Caffeine's estimatedSize() may not immediately reflect 0 due to async cleanup,
      * so we verify the cache is actually empty via the underlying cache.
      */
-    public void testEmptyCacheStats() {
+    @Test
+    public void EmptyCacheStats() {
         // Verify cache is actually empty
         assertEquals("Cache should be empty", 0L, caffeineCache.asMap().size());
 
@@ -536,11 +623,290 @@ public class CaffeineBlockCacheTests extends OpenSearchTestCase {
         assertTrue("Stats should be non-empty", stats.length() > 0);
     }
 
+    /**
+     * Tests that cacheStats includes maxSize and utilization.
+     */
+    @Test
+    public void CacheStatsIncludesUtilization() {
+        BlockCacheKey key1 = new FileBlockCacheKey(Paths.get("/test/file1.dat"), 0L);
+        BlockCacheKey key2 = new FileBlockCacheKey(Paths.get("/test/file2.dat"), 0L);
+        
+        blockCache.put(key1, createMockValue("data1"));
+        blockCache.put(key2, createMockValue("data2"));
+        
+        String stats = blockCache.cacheStats();
+        
+        assertTrue("Stats should include maxSize", stats.contains("maxSize="));
+        assertTrue("Stats should include utilization", stats.contains("utilization="));
+        assertTrue("Stats should show maxSize=100", stats.contains("maxSize=100"));
+    }
+
     // Helper methods
 
     private BlockCacheValue<String> createMockValue(String data) {
         BlockCacheValue<String> value = mock(BlockCacheValue.class);
         when(value.value()).thenReturn(data);
         return value;
+    }
+
+    /**
+     * Tests that loadMissingBlocks executes asynchronously when executor is present.
+     */
+    public void testLoadMissingBlocksAsync() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> asyncCache = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/async.dat");
+        BlockCacheValue<String> mockValue = createMockValue("test");
+
+        CountDownLatch loadStarted = new CountDownLatch(1);
+        CountDownLatch loadComplete = new CountDownLatch(1);
+
+        when(mockLoader.load(any(Path.class), anyLong(), eq(1L), eq(50L))).thenAnswer(invocation -> {
+            loadStarted.countDown();
+            loadComplete.await();
+            return new BlockCacheValue[] { mockValue };
+        });
+
+        // Call loadMissingBlocks - should execute asynchronously
+        asyncCache.loadMissingBlocks(testPath, 0L, 1L);
+        assertEquals("Call should be recorded", 1L, prefetchTracker.getCalls());
+
+        // Verify load started
+        assertTrue("Load should start", loadStarted.await(1, TimeUnit.SECONDS));
+
+        // Complete the load
+        loadComplete.countDown();
+
+        // Wait for async execution to finish
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        verify(mockLoader, times(1)).load(any(Path.class), anyLong(), eq(1L), eq(50L));
+    }
+
+    /**
+     * Tests that concurrent calls to loadMissingBlocks are deduplicated.
+     */
+    public void testLoadMissingBlocksAsyncDeduplication() throws Exception {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> asyncCache = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/dedup.dat");
+        BlockCacheValue<String> mockValue = createMockValue("test");
+
+        AtomicInteger loadCount = new AtomicInteger(0);
+
+        when(mockLoader.load(any(Path.class), anyLong(), eq(1L), eq(50L))).thenAnswer(invocation -> {
+            loadCount.incrementAndGet();
+            return new BlockCacheValue[] { mockValue };
+        });
+
+        // Make multiple concurrent calls to same offset
+        int callCount = 100;
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(callCount);
+
+        for (int i = 0; i < callCount; i++) {
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    asyncCache.loadMissingBlocks(testPath, 0L, 1L);
+                } catch (Exception e) {
+                    fail("Unexpected exception: " + e.getMessage());
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+
+        startLatch.countDown();
+        assertTrue("All calls should complete", doneLatch.await(10, TimeUnit.SECONDS));
+
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(10, TimeUnit.SECONDS));
+
+        // Should only load once due to deduplication
+        assertEquals("Should only load once", 1, loadCount.get());
+    }
+
+    /**
+     * Tests that prefetch cache entries are cleaned up after loading.
+     */
+    public void testLoadMissingBlocksCacheHitCleansPrefetchTracker() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> cacheWithPrefetch = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/cachehit.dat");
+        BlockCacheValue<String> mockValue = createMockValue("cached");
+
+        // Pre-populate cache so the block is already present
+        FileBlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        caffeineCache.put(key, mockValue);
+
+        // Load the same block (async) — should hit cache, not call loader
+        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 1L);
+
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        verify(mockLoader, never()).load(any(Path.class), anyLong(), anyLong(), anyLong());
+    }
+
+    public void testLoadMissingBlocksCleanupPrefetchCache() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        PrefetchTracker prefetchTracker = new PrefetchTracker(executor);
+
+        CaffeineBlockCache<String, BlockCacheValue<String>> cacheWithPrefetch = new CaffeineBlockCache<>(
+            caffeineCache,
+            mockLoader,
+            MAX_BLOCKS,
+            prefetchTracker
+        );
+
+        Path testPath = Paths.get("/test/cleanup.dat");
+        BlockCacheValue<String> mockValue = createMockValue("test");
+
+        when(mockLoader.load(any(Path.class), anyLong(), eq(1L), eq(50L))).thenReturn(new BlockCacheValue[] { mockValue });
+
+        // Load blocks (async)
+        cacheWithPrefetch.loadMissingBlocks(testPath, 0L, 1L);
+
+        // Wait for async execution to finish
+        executor.shutdown();
+        assertTrue("Executor should finish", executor.awaitTermination(5, TimeUnit.SECONDS));
+
+        // Prefetch cache should be empty after loading
+        assertEquals("Prefetch cache should be cleaned up", 0, prefetchTracker.size());
+    }
+
+    /**
+     * Tests that loadMissingBlocks marks blocks as completed after actual load (not L2 hit).
+     * Uses synchronous executor so loadMissingBlocks completes before assertions.
+     */
+    @Test
+    public void testLoadMissingBlocksMarksCompletedOnActualLoad() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/lead.dat");
+        BlockCacheValue<String> mockValue = createMockValue("loaded");
+        when(mockLoader.load(any(Path.class), anyLong(), eq(1L), eq(50L)))
+            .thenReturn(new BlockCacheValue[] { mockValue });
+
+        syncCache.loadMissingBlocks(testPath, 0L, 1L);
+
+        assertEquals("Should have 1 completed entry", 1, syncTracker.completedSize());
+        assertTrue("checkLeadHit should consume the entry",
+            syncTracker.checkLeadHit(new FileBlockCacheKey(testPath, 0L)));
+        assertEquals(1, syncTracker.getLeadHits());
+        assertEquals(0, syncTracker.completedSize());
+    }
+
+    /**
+     * Tests that L2 cache hits during prefetch do NOT mark blocks as completed.
+     * Pre-populates L2 so cache.get() returns without calling the loader lambda.
+     */
+    @Test
+    public void testLoadMissingBlocksDoesNotMarkCompletedOnL2Hit() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/l2hit.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        BlockCacheValue<String> cachedValue = createMockValue("cached");
+
+        // Pre-populate L2 so prefetch finds a cache hit
+        caffeineCache.put(key, cachedValue);
+
+        syncCache.loadMissingBlocks(testPath, 0L, 1L);
+
+        assertEquals("L2 hit should NOT mark completed", 0, syncTracker.completedSize());
+        assertFalse(syncTracker.checkLeadHit(key));
+        assertEquals(0, syncTracker.getLeadHits());
+    }
+
+    /**
+     * Tests checkPrefetchLeadHit delegates correctly through CaffeineBlockCache.
+     */
+    @Test
+    public void testCheckPrefetchLeadHitDelegation() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/delegate.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+        syncTracker.markCompleted(key);
+
+        assertTrue(syncCache.checkPrefetchLeadHit(testPath, 0L));
+        assertEquals(1, syncTracker.getLeadHits());
+        // Second call should return false — consumed
+        assertFalse(syncCache.checkPrefetchLeadHit(testPath, 0L));
+    }
+
+    /**
+     * Tests checkPrefetchLeadMiss records miss when block is in-flight.
+     */
+    @Test
+    public void testCheckPrefetchLeadMissWhenInflight() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/miss.dat");
+        BlockCacheKey key = new FileBlockCacheKey(testPath, 0L);
+
+        // Simulate block in-flight (prefetch started but not finished)
+        syncTracker.putIfAbsent(key);
+
+        syncCache.checkPrefetchLeadMiss(testPath, 0L);
+        assertEquals("Should record lead miss for in-flight block", 1, syncTracker.getLeadMisses());
+
+        // Clean up
+        syncTracker.remove(key);
+    }
+
+    /**
+     * Tests checkPrefetchLeadMiss does NOT record miss when block is not in-flight.
+     */
+    @Test
+    public void testCheckPrefetchLeadMissIgnoresNonInflight() throws Exception {
+        PrefetchTracker syncTracker = new PrefetchTracker(Runnable::run);
+        CaffeineBlockCache<String, BlockCacheValue<String>> syncCache = new CaffeineBlockCache<>(
+            caffeineCache, mockLoader, MAX_BLOCKS, syncTracker
+        );
+
+        Path testPath = Paths.get("/test/nomiss.dat");
+
+        syncCache.checkPrefetchLeadMiss(testPath, 0L);
+        assertEquals("Should NOT record miss for non-inflight block", 0, syncTracker.getLeadMisses());
     }
 }

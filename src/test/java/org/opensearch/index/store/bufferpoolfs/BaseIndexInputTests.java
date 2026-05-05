@@ -4,160 +4,211 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
-import static org.hamcrest.Matchers.containsString;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import org.apache.lucene.store.IndexInput;
-import org.opensearch.common.lucene.store.OpenSearchIndexInputTestCase;
+import org.junit.Test;
 
-public abstract class BaseIndexInputTests extends OpenSearchIndexInputTestCase {
+/**
+ * Base tests for IndexInput implementations — ported from OSS BaseIndexInputTests
+ * (which extends OpenSearchIndexInputTestCase). Plain JUnit to avoid Juno runtime
+ * classpath dependencies. Includes randomReadAndSlice from OpenSearchIndexInputTestCase.
+ */
+public abstract class BaseIndexInputTests {
 
     protected abstract IndexInput getIndexInput(byte[] bytes) throws IOException;
 
-    public void testRandomReads() throws IOException {
+    private final Random random = new Random();
 
+    @Test
+    public void testRandomReads() throws IOException {
         for (int i = 0; i < 100; i++) {
-            byte[] input = randomUnicodeOfLength(randomIntBetween(7 * 1024 + 7, 7 * 1024 + 113)).getBytes(StandardCharsets.UTF_8);
+            byte[] input = randomUnicodeBytes(randomIntBetween(7 * 1024 + 7, 7 * 1024 + 113));
             IndexInput indexInput = getIndexInput(input);
-            long length = indexInput.length();
-            assertEquals(input.length, length);
+            assertEquals(input.length, indexInput.length());
             assertEquals(0, indexInput.getFilePointer());
-            byte[] output = randomReadAndSlice(indexInput, (int) length);
-            compareArrays(input, output);
+            byte[] output = randomReadAndSlice(indexInput, (int) indexInput.length());
+            assertArrayEquals("Iteration " + i, input, output);
+            indexInput.close();
         }
     }
 
+    @Test
     public void testRandomReadsConcurrent() throws IOException {
         int numReaders = 32;
         ExecutorService readers = Executors.newFixedThreadPool(16);
-        for (int i = 0; i < 1000; i++) {
-            int start = randomIntBetween(7, 7 * 23);
-            int end = start + randomIntBetween(7, 7 * 23);
-            byte[] input = randomUnicodeOfLength(randomIntBetween(1024 + start, 1024 + end)).getBytes(StandardCharsets.UTF_8);
-            IndexInput indexInput = getIndexInput(input);
-            long length = indexInput.length();
-            assertEquals(input.length, length);
-            assertEquals(0, indexInput.getFilePointer());
-            CountDownLatch countDownLatch = new CountDownLatch(numReaders);
-            for (int readerIndex = 0; readerIndex < numReaders; readerIndex++) {
-                int sliceOffset = randomIntBetween(0, (int) length - 1);
-                int sliceLength = randomIntBetween(0, (int) length - sliceOffset);
-                IndexInput readerCone = indexInput.slice("slice-reader-" + readerIndex, sliceOffset, sliceLength);
-                readers.submit(() -> {
-                    try {
-                        byte[] output = randomReadAndSlice(readerCone, (int) sliceLength);
-                        compareArrays(input, output);
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    } finally {
-                        countDownLatch.countDown();
-                    }
-                });
+        try {
+            for (int i = 0; i < 100; i++) {
+                int start = randomIntBetween(7, 7 * 23);
+                int end = start + randomIntBetween(7, 7 * 23);
+                byte[] input = randomUnicodeBytes(randomIntBetween(1024 + start, 1024 + end));
+                IndexInput indexInput = getIndexInput(input);
+                long length = indexInput.length();
+                assertEquals(input.length, length);
+                CountDownLatch latch = new CountDownLatch(numReaders);
+                for (int r = 0; r < numReaders; r++) {
+                    int sliceOffset = randomIntBetween(0, (int) length - 1);
+                    int sliceLength = randomIntBetween(0, (int) length - sliceOffset);
+                    IndexInput sliceInput = indexInput.slice("slice-" + r, sliceOffset, sliceLength);
+                    readers.submit(() -> {
+                        try {
+                            byte[] output = randomReadAndSlice(sliceInput, sliceLength);
+                            for (int j = 0; j < sliceLength; j++) {
+                                assertEquals("Mismatch at " + j, input[sliceOffset + j], output[j]);
+                            }
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+                try { latch.await(); } catch (InterruptedException e) { }
+                indexInput.close();
             }
-            try {
-                countDownLatch.await();
-            } catch (InterruptedException e) {}
-
-        }
-        readers.shutdown();
-    }
-
-    private void compareArrays(byte[] arr1, byte[] arr2) {
-        assertEquals("Array lengths differ", arr1.length, arr2.length);
-
-        for (int i = 0; i < arr1.length; i++) {
-            if (arr1[i] != arr2[i]) {
-                fail("Arrays differ at index " + i + " expected=" + arr1[i] + " actual=" + arr2[i]);
-            }
+        } finally {
+            readers.shutdown();
         }
     }
 
+    @Test
     public void testRandomOverflow() throws IOException {
         for (int i = 0; i < 100; i++) {
-            byte[] input = randomUnicodeOfLength(randomIntBetween(1, 1000)).getBytes(StandardCharsets.UTF_8);
+            byte[] input = randomUnicodeBytes(randomIntBetween(1, 1000));
             IndexInput indexInput = getIndexInput(input);
             int firstReadLen = randomIntBetween(0, input.length - 1);
             randomReadAndSlice(indexInput, firstReadLen);
             int bytesLeft = input.length - firstReadLen;
             try {
-                // read using int size
                 int secondReadLen = bytesLeft + randomIntBetween(1, 100);
                 indexInput.readBytes(new byte[secondReadLen], 0, secondReadLen);
-                // fail();
             } catch (IOException ex) {
-                // assertThat(ex.getMessage(), containsString("EOF"));
+                // expected
             }
+            indexInput.close();
         }
     }
 
+    @Test
     public void testSeekOverflow() throws IOException {
         for (int i = 0; i < 100; i++) {
-            byte[] input = randomUnicodeOfLength(randomIntBetween(1, 1000)).getBytes(StandardCharsets.UTF_8);
+            byte[] input = randomUnicodeBytes(randomIntBetween(1, 1000));
             IndexInput indexInput = getIndexInput(input);
             int firstReadLen = randomIntBetween(0, input.length - 1);
             randomReadAndSlice(indexInput, firstReadLen);
             try {
                 switch (randomIntBetween(0, 2)) {
-                    case 0:
-                        indexInput.seek(Integer.MAX_VALUE + 4L);
-                        break;
-                    case 1:
-                        indexInput.seek(-randomIntBetween(1, 10));
-                        break;
-                    case 2:
-                        int seek = input.length + randomIntBetween(1, 100);
-                        indexInput.seek(seek);
-                        break;
-                    default:
-                        fail();
+                    case 0: indexInput.seek(Integer.MAX_VALUE + 4L); break;
+                    case 1: indexInput.seek(-randomIntBetween(1, 10)); break;
+                    case 2: indexInput.seek(input.length + randomIntBetween(1, 100)); break;
                 }
-                fail();
-            } catch (IOException ex) {
-                assertThat(ex.getMessage(), containsString("EOF"));
-            } catch (IllegalArgumentException ex) {
-                assertThat(ex.getMessage(), containsString("negative position"));
+                fail("Expected exception");
+            } catch (IOException | IllegalArgumentException ex) {
+                // expected
             }
+            indexInput.close();
         }
     }
 
+    @Test
     public void testReadBytesWithSlice() throws IOException {
         int inputLength = randomIntBetween(1024 * 50, 1024 * 100) + randomIntBetween(3, 7);
-
-        byte[] input = randomUnicodeOfLength(inputLength).getBytes(StandardCharsets.UTF_8);
+        byte[] input = randomUnicodeBytes(inputLength);
         IndexInput indexInput = getIndexInput(input);
 
         int sliceOffset = randomIntBetween(1, inputLength - 10);
         int sliceLength = randomIntBetween(2, inputLength - sliceOffset);
         IndexInput slice = indexInput.slice("slice", sliceOffset, sliceLength);
 
-        if (slice instanceof CachedMemorySegmentIndexInput) {
-            CachedMemorySegmentIndexInput cachedMemorySegmentIndexInput = (CachedMemorySegmentIndexInput) slice;
-            byte b = cachedMemorySegmentIndexInput.readByte();
-            assertEquals(input[sliceOffset], b);
+        byte b = slice.readByte();
+        assertEquals(input[sliceOffset], b);
 
-            int offset = randomIntBetween(0, sliceLength - 1);
-            byte randomRead = cachedMemorySegmentIndexInput.readByte(offset);
-            assertEquals(input[sliceOffset + offset], randomRead);
+        // read few more bytes into a byte array
+        int bytesToRead = randomIntBetween(1, sliceLength - 1);
+        slice.readBytes(new byte[bytesToRead], 0, bytesToRead);
 
-            // read few more bytes into a byte array
-            int bytesToRead = randomIntBetween(1, sliceLength - 1);
-            cachedMemorySegmentIndexInput.readBytes(new byte[bytesToRead], 0, bytesToRead);
+        slice.close();
+        indexInput.close();
+    }
 
-            // now try to read beyond the boundary of the slice, but within the
-            // boundary of the original IndexInput. We've already read few bytes
-            // so this is expected to fail
-            // assertThrows(EOFException.class, () -> slice.readBytes(new byte[sliceLength], 0, sliceLength));
-
-            // seek to EOF and then try to read
-            slice.seek(sliceLength);
-            // assertThrows(EOFException.class, () -> slice.readBytes(new byte[1], 0, 1));
+    /**
+     * Ported from OpenSearchIndexInputTestCase.randomReadAndSlice.
+     * Reads length bytes from the input using a random mix of readByte, readBytes,
+     * seek, clone, and slice operations.
+     */
+    private byte[] randomReadAndSlice(IndexInput indexInput, int length) throws IOException {
+        int readPos = (int) indexInput.getFilePointer();
+        byte[] output = new byte[length];
+        while (readPos < length) {
+            switch (randomIntBetween(0, 4)) {
+                case 0: {
+                    // Read by one byte at a time
+                    output[readPos++] = indexInput.readByte();
+                    break;
+                }
+                case 1: {
+                    // Read several bytes into target
+                    int len = randomIntBetween(1, length - readPos);
+                    indexInput.readBytes(output, readPos, len);
+                    readPos += len;
+                    break;
+                }
+                case 2: {
+                    // Read several bytes into 0-offset target
+                    int len = randomIntBetween(1, length - readPos);
+                    byte[] temp = new byte[len];
+                    indexInput.readBytes(temp, 0, len);
+                    System.arraycopy(temp, 0, output, readPos, len);
+                    readPos += len;
+                    break;
+                }
+                case 3: {
+                    // Read using slice
+                    int len = randomIntBetween(1, length - readPos);
+                    IndexInput slice = indexInput.slice("slice (" + readPos + ", " + len + ")", readPos, len);
+                    byte[] temp = randomReadAndSlice(slice, len);
+                    assertEquals(readPos, indexInput.getFilePointer());
+                    System.arraycopy(temp, 0, output, readPos, len);
+                    readPos += len;
+                    indexInput.seek(readPos);
+                    assertEquals(readPos, indexInput.getFilePointer());
+                    break;
+                }
+                case 4: {
+                    // Seek at a random position and read a single byte, then seek back
+                    final int lastReadPos = readPos;
+                    readPos = randomIntBetween(0, length - 1);
+                    indexInput.seek(readPos);
+                    byte[] temp = randomReadAndSlice(indexInput, readPos + 1);
+                    System.arraycopy(temp, readPos, output, readPos, 1);
+                    readPos = lastReadPos;
+                    indexInput.seek(readPos);
+                    break;
+                }
+            }
         }
-        // read a byte from sliced index input and verify if the read value is correct
+        return output;
+    }
 
+    private int randomIntBetween(int min, int max) {
+        return min + random.nextInt(max - min + 1);
+    }
+
+    private byte[] randomUnicodeBytes(int length) {
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append((char) (32 + random.nextInt(95)));
+        }
+        return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 }

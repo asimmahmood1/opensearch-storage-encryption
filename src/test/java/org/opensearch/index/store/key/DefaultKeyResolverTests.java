@@ -8,11 +8,13 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Key;
 import java.security.Provider;
@@ -23,6 +25,7 @@ import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSLockFactory;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -36,7 +39,6 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.CaffeineThreadLeakFilter;
 import org.opensearch.index.store.metrics.CryptoMetricsService;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
@@ -47,7 +49,7 @@ import com.carrotsearch.randomizedtesting.annotations.ThreadLeakFilters;
  * Unit tests for {@link DefaultKeyResolver}
  */
 @ThreadLeakFilters(filters = CaffeineThreadLeakFilter.class)
-public class DefaultKeyResolverTests extends OpenSearchTestCase {
+public class DefaultKeyResolverTests {
 
     @Mock
     private MasterKeyProvider mockKeyProvider;
@@ -60,10 +62,9 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         MockitoAnnotations.openMocks(this);
 
-        tempDir = createTempDir();
+        tempDir = Files.createTempDirectory("test-tmp");
         directory = new NIOFSDirectory(tempDir, FSLockFactory.getDefault());
         provider = Security.getProvider("SunJCE");
         assertNotNull("SunJCE provider should be available", provider);
@@ -100,7 +101,6 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         MasterKeyHealthMonitor.reset();
         NodeLevelKeyCache.reset();
         ShardKeyResolverRegistry.clearCache();
-        super.tearDown();
     }
 
     /**
@@ -115,7 +115,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         resolverCache.put(new ShardCacheKey(indexUuid, shardId, "test-index"), resolver);
     }
 
-    public void testInitializationWithNewKey() throws Exception {
+    @Test
+    public void InitializationWithNewKey() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -141,7 +142,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertNotNull(resolver.getDataKey());
     }
 
-    public void testInitializationWithExistingKey() throws Exception {
+    @Test
+    public void InitializationWithExistingKey() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -183,7 +185,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertArrayEquals(key1.getEncoded(), key2.getEncoded());
     }
 
-    public void testGetDataKey() throws Exception {
+    @Test
+    public void GetDataKey() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -211,7 +214,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertEquals(32, key.getEncoded().length);
     }
 
-    public void testLoadKeyFromMasterKeyProvider() throws Exception {
+    @Test
+    public void LoadKeyFromMasterKeyProvider() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -242,7 +246,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertArrayEquals(loadedKey.getEncoded(), loadedKey2.getEncoded());
     }
 
-    public void testMultipleResolversShareSameKey() throws Exception {
+    @Test
+    public void MultipleResolversShareSameKey() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -290,7 +295,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertArrayEquals(resolver1.getDataKey().getEncoded(), resolver3.getDataKey().getEncoded());
     }
 
-    public void testKeyFileCreation() throws Exception {
+    @Test
+    public void KeyFileCreation() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -324,7 +330,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertTrue("keyfile should exist", keyFileExists);
     }
 
-    public void testKeyIsConsistentAcrossReads() throws Exception {
+    @Test
+    public void KeyIsConsistentAcrossReads() throws Exception {
         byte[] dataKey = new byte[32];
         byte[] encryptedKey = new byte[32];
         for (int i = 0; i < 32; i++) {
@@ -354,7 +361,8 @@ public class DefaultKeyResolverTests extends OpenSearchTestCase {
         assertArrayEquals(key1.getEncoded(), key3.getEncoded());
     }
 
-    public void testInitializationFailureOnKeyProviderError() throws Exception {
+    @Test
+    public void InitializationFailureOnKeyProviderError() throws Exception {
         when(mockKeyProvider.generateDataPair()).thenThrow(new RuntimeException("Key provider unavailable"));
 
         try {

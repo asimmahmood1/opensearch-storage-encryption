@@ -18,6 +18,7 @@ import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.After;
+import org.junit.Test;
 import org.junit.Before;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -31,7 +32,6 @@ import org.opensearch.common.SuppressForbidden;
 import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.store.key.MasterKeyHealthMonitor.FailureState;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
@@ -41,7 +41,7 @@ import org.opensearch.transport.client.IndicesAdminClient;
  * error classification, block management, and state transitions.
  * 
  */
-public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
+public class MasterKeyHealthMonitorTests {
 
     @Mock
     private Client mockClient;
@@ -75,7 +75,6 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
         MockitoAnnotations.openMocks(this);
 
         // Setup mock cluster service chain
@@ -98,7 +97,6 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     @After
     public void tearDown() throws Exception {
         MasterKeyHealthMonitor.reset();
-        super.tearDown();
     }
 
     /**
@@ -116,7 +114,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Transient errors (THROTTLING) should NOT apply blocks
      */
-    public void testTransientErrorDoesNotApplyBlocks() throws Exception {
+    @Test
+    public void TransientErrorDoesNotApplyBlocks() throws Exception {
         // Setup: Index has no blocks initially
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -139,7 +138,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Critical errors (DISABLED_KEY) should apply blocks
      */
-    public void testCriticalErrorAppliesBlocks() throws Exception {
+    @Test
+    public void CriticalErrorAppliesBlocks() throws Exception {
         // Setup: Index has no blocks initially
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -159,7 +159,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Multiple transient failures should NOT escalate to blocks
      */
-    public void testMultipleTransientFailuresNoBlocks() throws Exception {
+    @Test
+    public void MultipleTransientFailuresNoBlocks() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -184,7 +185,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Error escalation from TRANSIENT to CRITICAL applies blocks
      */
-    public void testErrorEscalationFromTransientToCritical() throws Exception {
+    @Test
+    public void ErrorEscalationFromTransientToCritical() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -212,7 +214,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Success removes blocks and clears failure tracker
      */
-    public void testSuccessRemovesBlocks() throws Exception {
+    @Test
+    public void SuccessRemovesBlocks() throws Exception {
         // Setup: Simulate existing blocks
         Settings settingsWithBlocks = Settings.builder().put("index.blocks.read", true).put("index.blocks.write", true).build();
         when(mockIndexMetadata.getSettings()).thenReturn(settingsWithBlocks);
@@ -236,7 +239,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Success when no blocks exist is safe
      */
-    public void testSuccessWithoutBlocksNoOp() throws Exception {
+    @Test
+    public void SuccessWithoutBlocksNoOp() throws Exception {
         // Setup: No blocks exist
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -260,7 +264,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Failure state updates timestamp on subsequent failures
      */
-    public void testFailureStateUpdatesTimestamp() throws Exception {
+    @Test
+    public void FailureStateUpdatesTimestamp() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -289,7 +294,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Failure type can upgrade from TRANSIENT to CRITICAL but not downgrade
      */
-    public void testFailureTypeUpgradeOnly() throws Exception {
+    @Test
+    public void FailureTypeUpgradeOnly() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -315,7 +321,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Blocks applied only on first critical failure
      */
-    public void testBlocksAppliedOnlyOnce() throws Exception {
+    @Test
+    public void BlocksAppliedOnlyOnce() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -344,7 +351,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
      * 
      * This test verifies that the failure tracker maintains independent state for different indices.
      */
-    public void testMultipleIndicesIndependentState() throws Exception {
+    @Test
+    public void MultipleIndicesIndependentState() throws Exception {
         // Setup
         String index1Uuid = "index1-uuid";
         String index1Name = "index1";
@@ -383,7 +391,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Null index name is handled gracefully
      */
-    public void testNullIndexNameHandledGracefully() throws Exception {
+    @Test
+    public void NullIndexNameHandledGracefully() throws Exception {
         Exception error = new RuntimeException("Test error");
 
         // Should not throw exception
@@ -398,7 +407,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Success for non-existent failure is safe
      */
-    public void testSuccessForNonExistentFailure() throws Exception {
+    @Test
+    public void SuccessForNonExistentFailure() throws Exception {
         // Act: Report success for index that never failed
         monitor.reportSuccess("non-existent-uuid", "non-existent-index");
 
@@ -411,7 +421,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
      * Test unknown errors default to TRANSIENT 
      * This validates the safer default behavior where unknown errors don't block indices
      */
-    public void testUnknownErrorsDefaultToTransient() throws Exception {
+    @Test
+    public void UnknownErrorsDefaultToTransient() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -440,7 +451,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Test explicit critical error patterns are correctly identified
      */
-    public void testExplicitCriticalErrorPatterns() throws Exception {
+    @Test
+    public void ExplicitCriticalErrorPatterns() throws Exception {
         // Setup
         when(mockIndexMetadata.getSettings()).thenReturn(Settings.EMPTY);
 
@@ -463,7 +475,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
     /**
      * Test explicit transient error patterns are correctly identified
      */
-    public void testExplicitTransientErrorPatterns() throws Exception {
+    @Test
+    public void ExplicitTransientErrorPatterns() throws Exception {
         // Test various transient error patterns
         String[] transientPatterns = {
             "ThrottlingException: Rate exceeded",
@@ -483,7 +496,8 @@ public class MasterKeyHealthMonitorTests extends OpenSearchTestCase {
      * Test AWS SDK exception types detected via class name (most reliable method)
      * This simulates what happens when DisabledException is wrapped in KeyCacheException
      */
-    public void testExceptionTypeDetectionForWrappedAwsSdkExceptions() throws Exception {
+    @Test
+    public void ExceptionTypeDetectionForWrappedAwsSdkExceptions() throws Exception {
         // Create a real DisabledException class for testing
         class DisabledException extends Exception {
             DisabledException(String message) {

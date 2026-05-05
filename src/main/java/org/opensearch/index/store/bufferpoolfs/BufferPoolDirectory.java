@@ -25,12 +25,12 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
 import org.opensearch.common.SuppressForbidden;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
+import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.block_loader.BlockLoader;
-import org.opensearch.index.store.block_loader.FileChannelCache;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.footer.EncryptionFooter;
 import org.opensearch.index.store.footer.EncryptionMetadataTrailer;
@@ -58,7 +58,7 @@ import org.opensearch.index.store.read_ahead.impl.ReadaheadManagerImpl;
  * <p>The directory uses {@link BufferIOWithCaching} for output operations which encrypts
  * data before writing to disk and caches plaintext blocks for read operations. Input
  * operations use {@link CachedMemorySegmentIndexInput} with a multi-level cache hierarchy
- * including {@link BlockSlotTinyCache} for L1 caching.
+ * including {@link RadixBlockTable} for L1 caching.
  *
  * <p>Note: Some file types (segments files and .si files) fall back to the parent
  * directory implementation to avoid compatibility issues.
@@ -70,14 +70,14 @@ public class BufferPoolDirectory extends FSDirectory {
     private static final Logger LOGGER = LogManager.getLogger(BufferPoolDirectory.class);
     private final AtomicLong nextTempFileCounter = new AtomicLong();
 
-    private final Pool<RefCountedMemorySegment> memorySegmentPool;
-    private final BlockCache<RefCountedMemorySegment> blockCache;
+    private final Pool<RefCountedByteBuffer> memorySegmentPool;
+    private final BlockCache<RefCountedByteBuffer> blockCache;
     private final Worker readAheadworker;
     private final Provider provider;
     private final Path dirPath;
     private final byte[] masterKeyBytes;
     private final EncryptionMetadataCache encryptionMetadataCache;
-    private final FileChannelCache fileChannelCache;
+    private final RadixBlockTableRegistry radixBlockTableRegistry;
 
     /**
      * Creates a new CryptoDirectIODirectory with the specified components.
@@ -90,6 +90,8 @@ public class BufferPoolDirectory extends FSDirectory {
      * @param blockCache cache for storing decrypted blocks
      * @param blockLoader loader for reading blocks from storage
      * @param worker background worker for read-ahead operations
+     * @param encryptionMetadataCache cache for encryption metadata
+     * @param radixBlockTableRegistry registry for per-file L1 RadixBlockTable lifecycle management
      * @throws IOException if the directory cannot be created or accessed
      */
     public BufferPoolDirectory(
@@ -97,12 +99,12 @@ public class BufferPoolDirectory extends FSDirectory {
         LockFactory lockFactory,
         Provider provider,
         KeyResolver keyResolver,
-        Pool<RefCountedMemorySegment> memorySegmentPool,
-        BlockCache<RefCountedMemorySegment> blockCache,
-        BlockLoader<RefCountedMemorySegment> blockLoader,
+        Pool<RefCountedByteBuffer> memorySegmentPool,
+        BlockCache<RefCountedByteBuffer> blockCache,
+        BlockLoader<RefCountedByteBuffer> blockLoader,
         Worker worker,
         EncryptionMetadataCache encryptionMetadataCache,
-        FileChannelCache fileChannelCache
+        RadixBlockTableRegistry radixBlockTableRegistry
     )
         throws IOException {
         super(path, lockFactory);
@@ -113,7 +115,7 @@ public class BufferPoolDirectory extends FSDirectory {
         this.dirPath = getDirectory();
         this.masterKeyBytes = keyResolver.getDataKey().getEncoded();
         this.encryptionMetadataCache = encryptionMetadataCache;
-        this.fileChannelCache = fileChannelCache;
+        this.radixBlockTableRegistry = radixBlockTableRegistry;
 
         // startCacheStatsTelemetry(); // uncomment for local testing
     }
@@ -124,28 +126,30 @@ public class BufferPoolDirectory extends FSDirectory {
             ensureOpen();
             ensureCanRead(name);
 
-            Path file = dirPath.resolve(name);
-            long rawFileSize = Files.size(file);
+            Path fileAbsoluteNormalizedPath = dirPath.resolve(name).toAbsolutePath().normalize();
+            LOGGER.trace("Path normalization: raw=[{}] normalized=[{}]", dirPath.resolve(name), fileAbsoluteNormalizedPath);
+            long rawFileSize = Files.size(fileAbsoluteNormalizedPath);
             if (rawFileSize == 0) {
-                throw new IOException("Cannot open empty file with DirectIO: " + file);
+                throw new IOException("Cannot open empty file with DirectIO: " + fileAbsoluteNormalizedPath);
             }
 
             // Calculate content length with OSEF validation
-            long contentLength = calculateContentLengthWithValidation(file, rawFileSize);
+            long contentLength = calculateContentLengthWithValidation(fileAbsoluteNormalizedPath, rawFileSize);
 
             ReadaheadManager readAheadManager = new ReadaheadManagerImpl(readAheadworker, blockCache);
-            ReadaheadContext readAheadContext = readAheadManager.register(file, contentLength);
-            BlockSlotTinyCache pinRegistry = new BlockSlotTinyCache(blockCache, file, contentLength);
+            ReadaheadContext readAheadContext = readAheadManager.register(fileAbsoluteNormalizedPath, contentLength);
+            RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable = radixBlockTableRegistry.acquire(fileAbsoluteNormalizedPath);
 
             return CachedMemorySegmentIndexInput
                 .newInstance(
-                    "CachedMemorySegmentIndexInput(path=\"" + file + "\")",
-                    file,
+                    "CachedMemorySegmentIndexInput(path=\"" + fileAbsoluteNormalizedPath + "\")",
+                    fileAbsoluteNormalizedPath,
                     contentLength,
                     blockCache,
                     readAheadManager,
                     readAheadContext,
-                    pinRegistry
+                    radixBlockTable,
+                    radixBlockTableRegistry
                 );
         } catch (Exception e) {
             CryptoMetricsService.getInstance().recordError(ErrorType.INDEX_INPUT_ERROR);
@@ -161,12 +165,12 @@ public class BufferPoolDirectory extends FSDirectory {
             }
 
             ensureOpen();
-            Path path = directory.resolve(name);
-            OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+            Path fileAbsoluteNormalizedPath = directory.resolve(name).toAbsolutePath().normalize();
+            OutputStream fos = Files.newOutputStream(fileAbsoluteNormalizedPath, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
             return new BufferIOWithCaching(
                 name,
-                path,
+                fileAbsoluteNormalizedPath,
                 fos,
                 masterKeyBytes,
                 this.memorySegmentPool,
@@ -188,12 +192,12 @@ public class BufferPoolDirectory extends FSDirectory {
 
         ensureOpen();
         String name = getTempFileName(prefix, suffix, nextTempFileCounter.getAndIncrement());
-        Path path = directory.resolve(name);
-        OutputStream fos = Files.newOutputStream(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
+        Path fileAbsoluteNormalizedPath = directory.resolve(name).toAbsolutePath().normalize();
+        OutputStream fos = Files.newOutputStream(fileAbsoluteNormalizedPath, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
 
         return new BufferIOWithCaching(
             name,
-            path,
+            fileAbsoluteNormalizedPath,
             fos,
             masterKeyBytes,
             this.memorySegmentPool,
@@ -216,33 +220,30 @@ public class BufferPoolDirectory extends FSDirectory {
         if (blockCache != null) {
             blockCache.invalidateByPathPrefix(dirPath);
         }
-
-        // Invalidate all FD cache entries for files in this directory.
-        // Idle channels close immediately; in-flight channels close when I/O finishes.
-        if (fileChannelCache != null) {
-            fileChannelCache.invalidateByPathPrefix(dirPath);
-        }
-
-        // Mark directory as closed so ensureOpen() throws AlreadyClosedException
-        super.close();
+        // Note: L1 RadixBlockTable entries for this directory's files are cleaned up
+        // via two mechanisms:
+        // 1. The blockCache.invalidateByPathPrefix above triggers Caffeine evictions,
+        //    which fire the eviction listener → registry.onEviction() → L1 slots nulled
+        // 2. Master IndexInput.close() calls registry.release(path) for each file,
+        //    which clears and removes the table when refCount reaches 0
     }
 
     @Override
     public void deleteFile(String name) throws IOException {
-        Path file = dirPath.resolve(name);
+        Path fileAbsoluteNormalizedPath = dirPath.resolve(name).toAbsolutePath().normalize();
 
         // Cancel any pending async read-ahead operations for this file FIRST
         // to prevent race where read-ahead tries to load blocks from deleted/replaced file
-        readAheadworker.cancel(file);
+        readAheadworker.cancel(fileAbsoluteNormalizedPath);
 
         if (blockCache != null) {
             try {
-                long fileSize = Files.size(file);
+                long fileSize = Files.size(fileAbsoluteNormalizedPath);
                 if (fileSize > 0) {
                     final int totalBlocks = (int) ((fileSize + CACHE_BLOCK_SIZE - 1) >>> CACHE_BLOCK_SIZE_POWER);
                     for (int i = 0; i < totalBlocks; i++) {
                         final long blockOffset = (long) i << CACHE_BLOCK_SIZE_POWER;
-                        FileBlockCacheKey key = new FileBlockCacheKey(file, blockOffset);
+                        FileBlockCacheKey key = new FileBlockCacheKey(fileAbsoluteNormalizedPath, blockOffset);
                         blockCache.invalidate(key);
                     }
                 }
@@ -252,12 +253,7 @@ public class BufferPoolDirectory extends FSDirectory {
             }
         }
         super.deleteFile(name);
-        encryptionMetadataCache.invalidateFile(EncryptionMetadataCache.normalizePath(file));
-
-        // Invalidate the FD cache entry for the deleted file
-        if (fileChannelCache != null) {
-            fileChannelCache.invalidate(file.toAbsolutePath().normalize().toString());
-        }
+        encryptionMetadataCache.invalidateFile(fileAbsoluteNormalizedPath.toString());
     }
 
     /**
@@ -269,7 +265,7 @@ public class BufferPoolDirectory extends FSDirectory {
             return rawFileSize;
         }
 
-        String normalizedPath = EncryptionMetadataCache.normalizePath(file);
+        String normalizedPath = file.toString();
 
         // Check cache first for fast path
         EncryptionFooter cachedFooter = encryptionMetadataCache.getFooter(normalizedPath);

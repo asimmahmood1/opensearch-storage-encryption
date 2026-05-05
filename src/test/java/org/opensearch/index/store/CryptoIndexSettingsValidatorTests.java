@@ -4,26 +4,30 @@
  */
 package org.opensearch.index.store;
 
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+import org.junit.Test;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.IndexModule;
-import org.opensearch.test.OpenSearchTestCase;
 
 /**
  * Tests for {@link CryptoIndexSettingsValidator}.
  */
-public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
+public class CryptoIndexSettingsValidatorTests {
 
-    public void testValidateNonCryptoStoreType() {
+    @Test
+    public void ValidateNonCryptoStoreType() {
         Settings settings = Settings.builder().put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "niofs").build();
 
         // Should not throw any exception for non-cryptofs store type
         CryptoIndexSettingsValidator.validate(settings);
     }
 
-    public void testValidateMissingKeyProvider() {
+    @Test
+    public void ValidateMissingKeyProvider() {
         Settings settings = Settings.builder().put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs").build();
 
-        IllegalArgumentException exception = expectThrows(
+        IllegalArgumentException exception = assertThrows(
             IllegalArgumentException.class,
             () -> CryptoIndexSettingsValidator.validate(settings)
         );
@@ -31,14 +35,15 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         assertTrue(exception.getMessage().contains("index.store.crypto.key_provider must be specified"));
     }
 
-    public void testValidateMissingKmsArnForAwsKms() {
+    @Test
+    public void ValidateMissingKmsArnForAwsKms() {
         Settings settings = Settings
             .builder()
             .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
             .put(CryptoDirectoryFactory.INDEX_KEY_PROVIDER_SETTING.getKey(), "aws-kms")
             .build();
 
-        IllegalArgumentException exception = expectThrows(
+        IllegalArgumentException exception = assertThrows(
             IllegalArgumentException.class,
             () -> CryptoIndexSettingsValidator.validate(settings)
         );
@@ -46,7 +51,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         assertTrue(exception.getMessage().contains("index.store.crypto.kms.key_arn must be specified"));
     }
 
-    public void testValidateInvalidKmsArnFormat() {
+    @Test
+    public void ValidateInvalidKmsArnFormat() {
         String[] invalidArns = {
             "invalid-arn",
             "arn:aws:s3:us-west-2:123456789012:key/abc123", // s3 instead of kms
@@ -63,7 +69,7 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
                 .put(CryptoDirectoryFactory.INDEX_KMS_ARN_SETTING.getKey(), invalidArn)
                 .build();
 
-            IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
                 () -> CryptoIndexSettingsValidator.validate(settings)
             );
@@ -72,7 +78,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         }
     }
 
-    public void testValidateValidKmsArn() {
+    @Test
+    public void ValidateValidKmsArn() {
         String[] validArns = {
             "arn:aws:kms:us-west-2:248189931838:key/eb9f247c-304a-4078-becb-2219e596c40d",
             "arn:aws-cn:kms:cn-north-1:123456789012:key/12345678-1234-1234-1234-123456789012",
@@ -94,7 +101,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         }
     }
 
-    public void testValidateInvalidEncryptionContextFormat() {
+    @Test
+    public void ValidateInvalidEncryptionContextFormat() {
         String[] invalidContexts = {
             "key1 = value1", // spaces around =
             "key1=value1, key2=value2", // space after comma
@@ -117,7 +125,7 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
                 .put(CryptoDirectoryFactory.INDEX_KMS_ENC_CTX_SETTING.getKey(), invalidContext)
                 .build();
 
-            IllegalArgumentException exception = expectThrows(
+            IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
                 () -> CryptoIndexSettingsValidator.validate(settings)
             );
@@ -129,7 +137,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         }
     }
 
-    public void testValidateValidEncryptionContext() {
+    @Test
+    public void ValidateValidEncryptionContext() {
         String[] validContexts = {
             "domainARN=arn:aws:es:us-west-2:248189931838:domain/ile-testing-3-3-new-vfi-2",
             "key1=value1",
@@ -155,7 +164,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         }
     }
 
-    public void testValidateNullEncryptionContext() {
+    @Test
+    public void ValidateNullEncryptionContext() {
         Settings settings = Settings
             .builder()
             .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
@@ -170,7 +180,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         CryptoIndexSettingsValidator.validate(settings);
     }
 
-    public void testValidateValidCryptoProvider() {
+    @Test
+    public void ValidateValidCryptoProvider() {
         Settings settings = Settings
             .builder()
             .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")
@@ -185,7 +196,8 @@ public class CryptoIndexSettingsValidatorTests extends OpenSearchTestCase {
         CryptoIndexSettingsValidator.validate(settings);
     }
 
-    public void testValidateNonAwsKmsProviderDoesNotRequireKmsArn() {
+    @Test
+    public void ValidateNonAwsKmsProviderDoesNotRequireKmsArn() {
         Settings settings = Settings
             .builder()
             .put(IndexModule.INDEX_STORE_TYPE_SETTING.getKey(), "cryptofs")

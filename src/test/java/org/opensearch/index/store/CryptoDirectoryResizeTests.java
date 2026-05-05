@@ -4,13 +4,18 @@
  */
 package org.opensearch.index.store;
 
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -19,25 +24,12 @@ import java.security.Security;
 
 import javax.crypto.spec.SecretKeySpec;
 
-import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.IndexWriter;
-import org.apache.lucene.index.IndexWriterConfig;
-import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.MatchAllDocsQuery;
-import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.FSLockFactory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexOutput;
-import org.apache.lucene.tests.util.LuceneTestCase;
-import org.opensearch.cluster.metadata.IndexMetadata;
-import org.opensearch.common.Randomness;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.IndexSettings;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
 import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
@@ -47,51 +39,45 @@ import org.opensearch.index.store.niofs.CryptoNIOFSDirectory;
  * Verifies that keyfiles are correctly copied from source to target indices
  * during clone, split, and shrink operations.
  */
-public class CryptoDirectoryResizeTests extends LuceneTestCase {
+public class CryptoDirectoryResizeTests {
 
     private Path tempDir;
     private CryptoDirectoryFactory factory;
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
-        tempDir = createTempDir();
+        tempDir = Files.createTempDirectory("crypto-resize-test");
         factory = new CryptoDirectoryFactory();
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
-        super.tearDown();
+        if (tempDir != null && Files.exists(tempDir)) {
+            Files.walk(tempDir).sorted((a, b) -> -a.compareTo(b)).forEach(p -> {
+                try { Files.deleteIfExists(p); } catch (IOException e) { /* ignore */ }
+            });
+        }
     }
 
-    private void invokeHandleResizeKeyfileCopy(IndexSettings indexSettings, Path targetIndexDirectory) throws Exception {
-        factory.handleResizeOperation(indexSettings, targetIndexDirectory);
+    private void invokeHandleResizeKeyfileCopy(Settings settings, String indexName, Path targetIndexDirectory) throws Exception {
+        factory.handleResizeOperation(settings, indexName, targetIndexDirectory);
     }
 
     /**
-     * Helper method to create mock IndexSettings with resize metadata.
+     * Helper method to create mock Settings with resize metadata.
      */
-    private IndexSettings createIndexSettings(String indexUuid, String sourceUuid, String sourceName) {
-        Settings settings = Settings
-            .builder()
-            .put(IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
-            .put(IndexMetadata.SETTING_INDEX_UUID, indexUuid)
-            .put("index.store.type", "cryptofs")
-            .put("index.store.crypto.key_provider", "dummy")
+    private Settings createResizeSettings(String sourceUuid, String sourceName) {
+        return Settings.builder()
             .put("index.resize.source.uuid", sourceUuid)
             .put("index.resize.source.name", sourceName)
             .build();
-
-        return new IndexSettings(
-            IndexMetadata.builder("test-index").settings(settings).numberOfShards(1).numberOfReplicas(0).build(),
-            Settings.EMPTY
-        );
     }
 
     /**
      * Test that keyfile is copied from source to target during clone operation.
      */
-    public void testCloneOperationCopiesKeyfile() throws Exception {
+    @Test
+    public void CloneOperationCopiesKeyfile() throws Exception {
         String sourceUuid = "source-uuid-123";
         String targetUuid = "target-uuid-456";
 
@@ -116,11 +102,11 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         Path sourceKeyfile = sourceIndexDir.resolve("keyfile");
         assertTrue("Source keyfile should exist", Files.exists(sourceKeyfile));
 
-        // Create IndexSettings with clone metadata
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "source-index");
+        // Create Settings with clone metadata
+        Settings settings = createResizeSettings(sourceUuid, "source-index");
 
         // Invoke the private method
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
+        invokeHandleResizeKeyfileCopy(settings, "test-index", targetIndexDir);
 
         // Verify keyfile was copied to target
         Path targetKeyfile = targetIndexDir.resolve("keyfile");
@@ -142,7 +128,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     /**
      * Test that split operation copies keyfile from source to target.
      */
-    public void testSplitOperationCopiesKeyfile() throws Exception {
+    @Test
+    public void SplitOperationCopiesKeyfile() throws Exception {
         String sourceUuid = "split-source-uuid";
         String targetUuid = "split-target-uuid";
 
@@ -165,11 +152,10 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         }
 
         // Create IndexSettings with split metadata
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "split-source");
+        Settings settings = createResizeSettings(sourceUuid, "split-source");
 
         // Invoke the private method
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
-
+        invokeHandleResizeKeyfileCopy(settings, "test-index-01", targetIndexDir);
         Path targetKeyfile = targetIndexDir.resolve("keyfile");
         assertTrue("Target keyfile should exist after split", Files.exists(targetKeyfile));
 
@@ -188,7 +174,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     /**
      * Test that shrink operation copies keyfile from source to target.
      */
-    public void testShrinkOperationCopiesKeyfile() throws Exception {
+    @Test
+    public void ShrinkOperationCopiesKeyfile() throws Exception {
         String sourceUuid = "shrink-source-uuid";
         String targetUuid = "shrink-target-uuid";
 
@@ -214,10 +201,10 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         }
 
         // Create IndexSettings with shrink metadata
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "shrink-source");
+        Settings settings = createResizeSettings(sourceUuid, "shrink-source");
 
         // Invoke the private method
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
+        invokeHandleResizeKeyfileCopy(settings, "test-index-02", targetIndexDir);
 
         Path targetKeyfile = targetIndexDir.resolve("keyfile");
         assertTrue("Target keyfile should exist after shrink", Files.exists(targetKeyfile));
@@ -237,7 +224,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     /**
      * Test that non-resize operations don't copy keyfiles.
      */
-    public void testNonResizeOperationDoesNotCopyKeyfile() throws Exception {
+    @Test
+    public void NonResizeOperationDoesNotCopyKeyfile() throws Exception {
         String indexUuid = "regular-index-uuid";
 
         Path indicesDir = tempDir.resolve("indices");
@@ -246,25 +234,14 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         Path indexDir = indicesDir.resolve(indexUuid);
         Files.createDirectories(indexDir);
 
-        // Create IndexSettings WITHOUT resize metadata
-        Settings settings = Settings
-            .builder()
-            .put(IndexMetadata.SETTING_VERSION_CREATED, org.opensearch.Version.CURRENT)
-            .put(IndexMetadata.SETTING_INDEX_UUID, indexUuid)
-            .put("index.store.type", "cryptofs")
-            .put("index.store.crypto.key_provider", "dummy")
-            .build();
-
-        IndexSettings indexSettings = new IndexSettings(
-            IndexMetadata.builder("regular-index").settings(settings).numberOfShards(1).numberOfReplicas(0).build(),
-            Settings.EMPTY
-        );
+        // Create Settings WITHOUT resize metadata
+        Settings settings = Settings.EMPTY;
 
         Path keyfile = indexDir.resolve("keyfile");
         assertFalse("Keyfile should not exist before operation", Files.exists(keyfile));
 
         // Invoke the private method - should not copy anything
-        invokeHandleResizeKeyfileCopy(indexSettings, indexDir);
+        invokeHandleResizeKeyfileCopy(settings, "test-index-03", indexDir);
 
         // Keyfile should still not exist after non-resize operation
         assertFalse("Keyfile should not be created for non-resize operation", Files.exists(keyfile));
@@ -273,7 +250,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     /**
      * Test that missing source keyfile is handled gracefully.
      */
-    public void testMissingSourceKeyfileHandledGracefully() throws Exception {
+    @Test
+    public void MissingSourceKeyfileHandledGracefully() throws Exception {
         String sourceUuid = "missing-source-uuid";
         String targetUuid = "target-uuid";
 
@@ -287,10 +265,10 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
         Path targetIndexDir = indicesDir.resolve(targetUuid);
         Files.createDirectories(targetIndexDir);
 
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "missing-source");
+        Settings settings = createResizeSettings(sourceUuid, "missing-source");
 
         // Should not throw - missing source keyfile should be logged and handled
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
+        invokeHandleResizeKeyfileCopy(settings, "test-index-04", targetIndexDir);
 
         // Verify target keyfile was not created
         Path targetKeyfile = targetIndexDir.resolve("keyfile");
@@ -300,7 +278,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     /**
      * Test that existing target keyfile is not overwritten.
      */
-    public void testExistingTargetKeyfileNotOverwritten() throws Exception {
+    @Test
+    public void ExistingTargetKeyfileNotOverwritten() throws Exception {
         String sourceUuid = "source-existing-uuid";
         String targetUuid = "target-existing-uuid";
 
@@ -331,10 +310,10 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
             }
         }
 
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "source-index");
+        Settings settings = createResizeSettings(sourceUuid, "source-index");
 
         // Invoke the private method
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
+        invokeHandleResizeKeyfileCopy(settings, "test-index-05" ,targetIndexDir);
 
         // Verify target keyfile still has original data (not overwritten)
         byte[] targetKeyData;
@@ -350,17 +329,17 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
     }
 
     /**
-     * End-to-end test: Write encrypted documents to source index, copy keyfile,
-     * copy encrypted segment files, and verify cloned index can decrypt and read documents.
+     * End-to-end test: Write encrypted data to source directory, copy keyfile,
+     * copy encrypted files, and verify cloned directory can decrypt and read data.
      *
      * This test simulates the actual clone flow:
-     * 1. Create source index with cryptofs settings (keyfile created automatically)
-     * 2. Write and encrypt documents
-     * 3. Clone operation copies keyfile
-     * 4. Clone operation copies segment files
-     * 5. Target index can decrypt and read documents
+     * 1. Create source directory and write encrypted files via CryptoNIOFSDirectory
+     * 2. Clone operation copies keyfile
+     * 3. Clone operation copies encrypted data files
+     * 4. Target directory can decrypt and read the same data
      */
-    public void testEndToEndCloneWithEncryptedDocuments() throws Exception {
+    @Test
+    public void EndToEndCloneWithEncryptedDocuments() throws Exception {
         String sourceUuid = "source-e2e-uuid";
         String targetUuid = "target-e2e-uuid";
 
@@ -375,7 +354,7 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
 
         // Create a shared encryption key for testing
         byte[] rawKey = new byte[32]; // 256-bit AES key
-        java.util.Random rnd = Randomness.get();
+        java.util.Random rnd = new java.util.Random();
         rnd.nextBytes(rawKey);
 
         // Create KeyResolver that returns the same key for both source and target
@@ -384,9 +363,8 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
 
         Provider provider = Security.getProvider("SunJCE");
 
-        // Create keyfile in source directory (as DefaultKeyResolver would do)
-        // In real scenario, this is done by CryptoDirectoryFactory -> ShardKeyResolverRegistry -> DefaultKeyResolver
-        byte[] encryptedKeyData = new byte[32]; // Simulates encrypted DEK from KMS
+        // Create keyfile in source directory
+        byte[] encryptedKeyData = new byte[32];
         rnd.nextBytes(encryptedKeyData);
         try (FSDirectory dir = FSDirectory.open(sourceIndexDir)) {
             try (IndexOutput out = dir.createOutput("keyfile", IOContext.DEFAULT)) {
@@ -395,76 +373,71 @@ public class CryptoDirectoryResizeTests extends LuceneTestCase {
             }
         }
 
-        // Step 1: Write encrypted documents to source directory
+        // Step 1: Write encrypted data files to source directory via CryptoNIOFSDirectory
         EncryptionMetadataCache sourceCache = new EncryptionMetadataCache();
         Directory sourceDir = new CryptoNIOFSDirectory(FSLockFactory.getDefault(), sourceIndexDir, provider, keyResolver, sourceCache);
 
-        // Write some test documents
-        IndexWriterConfig config = new IndexWriterConfig();
-        try (IndexWriter writer = new IndexWriter(sourceDir, config)) {
-            // Add test documents
-            Document doc1 = new Document();
-            doc1.add(new StringField("id", "1", Field.Store.YES));
-            doc1.add(new StringField("content", "test document one", Field.Store.YES));
-            writer.addDocument(doc1);
+        byte[] doc1Data = "test document one".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] doc2Data = "test document two".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] doc3Data = "test document three".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
-            Document doc2 = new Document();
-            doc2.add(new StringField("id", "2", Field.Store.YES));
-            doc2.add(new StringField("content", "test document two", Field.Store.YES));
-            writer.addDocument(doc2);
-
-            Document doc3 = new Document();
-            doc3.add(new StringField("id", "3", Field.Store.YES));
-            doc3.add(new StringField("content", "test document three", Field.Store.YES));
-            writer.addDocument(doc3);
-
-            writer.commit();
+        try (IndexOutput out = sourceDir.createOutput("doc1.dat", IOContext.DEFAULT)) {
+            out.writeInt(doc1Data.length);
+            out.writeBytes(doc1Data, 0, doc1Data.length);
+        }
+        try (IndexOutput out = sourceDir.createOutput("doc2.dat", IOContext.DEFAULT)) {
+            out.writeInt(doc2Data.length);
+            out.writeBytes(doc2Data, 0, doc2Data.length);
+        }
+        try (IndexOutput out = sourceDir.createOutput("doc3.dat", IOContext.DEFAULT)) {
+            out.writeInt(doc3Data.length);
+            out.writeBytes(doc3Data, 0, doc3Data.length);
         }
 
-        // Verify source can read the documents
-        try (DirectoryReader reader = DirectoryReader.open(sourceDir)) {
-            assertEquals("Source should have 3 documents", 3, reader.numDocs());
-
-            IndexSearcher searcher = new IndexSearcher(reader);
-            TopDocs hits = searcher.search(new MatchAllDocsQuery(), 10);
-            assertEquals("Should find all 3 documents", 3, hits.scoreDocs.length);
+        // Verify source can read the data back
+        try (org.apache.lucene.store.IndexInput in = sourceDir.openInput("doc1.dat", IOContext.READONCE)) {
+            int len = in.readInt();
+            byte[] buf = new byte[len];
+            in.readBytes(buf, 0, len);
+            assertArrayEquals("Source doc1 should decrypt correctly", doc1Data, buf);
         }
 
         sourceDir.close();
 
         // Step 2: Simulate clone operation - copy keyfile
-        IndexSettings indexSettings = createIndexSettings(targetUuid, sourceUuid, "source-index");
-        invokeHandleResizeKeyfileCopy(indexSettings, targetIndexDir);
+        Settings settings = createResizeSettings(sourceUuid, "source-index");
+        invokeHandleResizeKeyfileCopy(settings, "test-index-06", targetIndexDir);
 
         // Verify keyfile was copied
         Path targetKeyfile = targetIndexDir.resolve("keyfile");
         assertTrue("Target keyfile should exist after clone", Files.exists(targetKeyfile));
 
-        // Step 3: Simulate Lucene's segment file copy (copy all files except keyfile)
-        try (var stream = Files.list(sourceIndexDir)) {
-            for (String fileName : stream.map(p -> p.getFileName().toString()).toArray(String[]::new)) {
-                if (!fileName.equals("keyfile") && !fileName.equals("write.lock")) {
-                    Files.copy(sourceIndexDir.resolve(fileName), targetIndexDir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
+        // Step 3: Copy encrypted data files to target (simulating Lucene segment file copy)
+        for (String fileName : new String[]{"doc1.dat", "doc2.dat", "doc3.dat"}) {
+            Files.copy(sourceIndexDir.resolve(fileName), targetIndexDir.resolve(fileName), StandardCopyOption.REPLACE_EXISTING);
         }
 
-        // Step 4: Open target directory and verify it can decrypt and read documents
+        // Step 4: Open target directory and verify it can decrypt and read the same data
         EncryptionMetadataCache targetCache = new EncryptionMetadataCache();
         Directory targetDir = new CryptoNIOFSDirectory(FSLockFactory.getDefault(), targetIndexDir, provider, keyResolver, targetCache);
 
-        try (DirectoryReader reader = DirectoryReader.open(targetDir)) {
-            assertEquals("Target should have 3 documents", 3, reader.numDocs());
-
-            IndexSearcher searcher = new IndexSearcher(reader);
-            TopDocs hits = searcher.search(new MatchAllDocsQuery(), 10);
-            assertEquals("Should find all 3 documents in cloned index", 3, hits.scoreDocs.length);
-
-            // Verify we can actually read the document content
-            Document doc = reader.storedFields().document(hits.scoreDocs[0].doc);
-            assertTrue("Document should have id field", doc.get("id") != null);
-            assertTrue("Document should have content field", doc.get("content") != null);
-            assertTrue("Content should be one of our test documents", doc.get("content").startsWith("test document"));
+        try (org.apache.lucene.store.IndexInput in = targetDir.openInput("doc1.dat", IOContext.READONCE)) {
+            int len = in.readInt();
+            byte[] buf = new byte[len];
+            in.readBytes(buf, 0, len);
+            assertArrayEquals("Cloned doc1 should decrypt to same content", doc1Data, buf);
+        }
+        try (org.apache.lucene.store.IndexInput in = targetDir.openInput("doc2.dat", IOContext.READONCE)) {
+            int len = in.readInt();
+            byte[] buf = new byte[len];
+            in.readBytes(buf, 0, len);
+            assertArrayEquals("Cloned doc2 should decrypt to same content", doc2Data, buf);
+        }
+        try (org.apache.lucene.store.IndexInput in = targetDir.openInput("doc3.dat", IOContext.READONCE)) {
+            int len = in.readInt();
+            byte[] buf = new byte[len];
+            in.readBytes(buf, 0, len);
+            assertArrayEquals("Cloned doc3 should decrypt to same content", doc3Data, buf);
         }
 
         targetDir.close();

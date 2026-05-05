@@ -8,11 +8,15 @@ import java.io.IOException;
 import java.security.Provider;
 import java.util.Set;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import org.apache.lucene.store.FileSwitchDirectory;
 import org.apache.lucene.store.IOContext;
 import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.LockFactory;
+import org.opensearch.index.store.CryptoDirectoryFactory;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.KeyResolver;
@@ -38,6 +42,7 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
     private final BufferPoolDirectory bufferPoolDirectory;
     private final Set<String> nioExtensions;
 
+    private static final Logger LOGGER = LogManager.getLogger(CryptoDirectoryFactory.class);
     /**
      * Creates a new HybridCryptoDirectory that routes operations between NIO and Direct I/O.
      *
@@ -72,11 +77,16 @@ public class HybridCryptoDirectory extends CryptoNIOFSDirectory {
      * @return true if the file should use Direct I/O, false for NIO
      */
     private boolean delegeteBufferPool(String extension) {
-        return !extension.isEmpty() && !nioExtensions.contains(extension);
+        LOGGER.info("delegate to bufferpool = true for extension - {} ", extension);
+        return true;
     }
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
+        if (name.contains("segments_") || name.endsWith(".si")) {
+            return super.openInput(name, context);
+        }
+
         String extension = FileSwitchDirectory.getExtension(name);
 
         ensureOpen();

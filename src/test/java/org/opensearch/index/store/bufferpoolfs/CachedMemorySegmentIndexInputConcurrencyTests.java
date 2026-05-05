@@ -4,12 +4,16 @@
  */
 package org.opensearch.index.store.bufferpoolfs;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
@@ -23,28 +27,34 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.junit.After;
 import org.junit.Before;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.junit.Test;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCache;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.FileBlockCacheKey;
 import org.opensearch.index.store.read_ahead.ReadaheadContext;
 import org.opensearch.index.store.read_ahead.ReadaheadManager;
-import org.opensearch.test.OpenSearchTestCase;
 
 /**
  * Tests concurrent access to CachedMemorySegmentIndexInput to reproduce and validate
  * fixes for CorruptIndexException issues found during concurrent operations.
  */
 @SuppressWarnings("preview")
-public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTestCase {
+public class CachedMemorySegmentIndexInputConcurrencyTests {
 
-    private static final int BLOCK_SIZE = 8192;
+    private static final Logger logger = LogManager.getLogger(CachedMemorySegmentIndexInputConcurrencyTests.class);
+
+    private static int BLOCK_SIZE;
     private static final ValueLayout.OfByte LAYOUT_BYTE = ValueLayout.JAVA_BYTE;
     private static final ValueLayout.OfInt LAYOUT_LE_INT = ValueLayout.JAVA_INT_UNALIGNED.withOrder(java.nio.ByteOrder.LITTLE_ENDIAN);
 
-    private BlockCache<RefCountedMemorySegment> mockCache;
-    private BlockSlotTinyCache mockTinyCache;
+    private BlockCache<RefCountedByteBuffer> mockCache;
+    private RadixBlockTable<BlockCacheValue<RefCountedByteBuffer>> radixBlockTable;
+    private RadixBlockTableRegistry radixBlockTableRegistry;
     private ReadaheadManager mockReadaheadManager;
     private ReadaheadContext mockReadaheadContext;
     private Path testPath;
@@ -52,21 +62,29 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+        StaticConfigs.resetForTesting();
+        StaticConfigs.init(8192);
+        BLOCK_SIZE = StaticConfigs.CACHE_BLOCK_SIZE;
         mockCache = mock(BlockCache.class);
-        mockTinyCache = mock(BlockSlotTinyCache.class);
+        radixBlockTableRegistry = new RadixBlockTableRegistry();
         mockReadaheadManager = mock(ReadaheadManager.class);
         mockReadaheadContext = mock(ReadaheadContext.class);
         testPath = Paths.get("/test/concurrent.dat");
+        radixBlockTable = radixBlockTableRegistry.acquire(testPath);
         arena = Arena.ofAuto();
+    }
+
+    @After
+    public void tearDown() {
+        StaticConfigs.resetForTesting();
     }
 
     /**
      * Tests concurrent reads from multiple threads accessing the same index input.
-     * This test validates that concurrent access to the same block doesn't cause
-     * data corruption or race conditions.
+     * Each thread clones the input per Lucene's single-thread-per-IndexInput contract.
      */
-    public void testConcurrentReadsFromSameInput() throws Exception {
+    @Test
+    public void ConcurrentReadsFromSameInput() throws Exception {
         int numBlocks = 10;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -139,7 +157,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
      * Tests concurrent reads from cloned instances.
      * Clones should be independent and not interfere with each other.
      */
-    public void testConcurrentReadsFromClones() throws Exception {
+    @Test
+    public void ConcurrentReadsFromClones() throws Exception {
         int numBlocks = 5;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -209,7 +228,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
      * This is a critical test that reproduces the CorruptIndexException scenario
      * where multiple threads read data that spans block boundaries.
      */
-    public void testConcurrentReadsAcrossBlockBoundaries() throws Exception {
+    @Test
+    public void ConcurrentReadsAcrossBlockBoundaries() throws Exception {
         int numBlocks = 4;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -253,7 +273,7 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
                             long offset = boundaryPositions[i % boundaryPositions.length];
 
                             try {
-                                int value = input.readInt(offset);
+                                int value = input.clone().readInt(offset);
                                 // Value should be valid (non-zero for our test data)
                                 assertTrue("Read should return valid int", value >= 0);
                             } catch (Exception e) {
@@ -285,7 +305,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
      * Tests concurrent reads and seeks from multiple threads.
      * This simulates real-world usage where threads jump around the file.
      */
-    public void testConcurrentSeekAndRead() throws Exception {
+    @Test
+    public void ConcurrentSeekAndRead() throws Exception {
         int numBlocks = 8;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -364,7 +385,8 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     /**
      * Tests concurrent array reads (readBytes) which are more complex than single reads.
      */
-    public void testConcurrentArrayReads() throws Exception {
+    @Test
+    public void ConcurrentArrayReads() throws Exception {
         int numBlocks = 5;
         long fileLength = BLOCK_SIZE * numBlocks;
 
@@ -446,21 +468,22 @@ public class CachedMemorySegmentIndexInputConcurrencyTests extends OpenSearchTes
     }
 
     private void setupBlock(long offset, MemorySegment segment) throws IOException {
-        RefCountedMemorySegment refSegment = new RefCountedMemorySegment(segment, (int) segment.byteSize(), (seg) -> {
-            // No-op releaser for tests
-        });
+        ByteBuffer buf = ByteBuffer.allocateDirect((int) segment.byteSize()).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        MemorySegment.copy(segment, 0, MemorySegment.ofBuffer(buf), 0, (int) segment.byteSize());
+        RefCountedByteBuffer refSegment = new RefCountedByteBuffer(buf, (int) segment.byteSize());
 
-        BlockCacheValue<RefCountedMemorySegment> value = mock(BlockCacheValue.class);
+        BlockCacheValue<RefCountedByteBuffer> value = mock(BlockCacheValue.class);
         when(value.value()).thenReturn(refSegment);
         when(value.tryPin()).thenReturn(true);
 
-        when(mockTinyCache.acquireRefCountedValue(eq(offset), any())).thenReturn(value);
-        when(mockTinyCache.acquireRefCountedValue(eq(offset))).thenReturn(value);
-        when(mockCache.getOrLoad(any(FileBlockCacheKey.class))).thenReturn(value);
+        FileBlockCacheKey key = new FileBlockCacheKey(testPath, offset);
+        when(mockCache.get(eq(key))).thenReturn(value);
+        when(mockCache.getOrLoad(eq(key))).thenReturn(value);
     }
 
     private CachedMemorySegmentIndexInput createInput(long length) {
         return CachedMemorySegmentIndexInput
-            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, mockTinyCache);
+            .newInstance("test", testPath, length, mockCache, mockReadaheadManager, mockReadaheadContext, radixBlockTable, radixBlockTableRegistry);
     }
+
 }

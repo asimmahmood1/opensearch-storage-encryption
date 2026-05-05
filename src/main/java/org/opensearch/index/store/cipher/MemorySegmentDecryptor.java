@@ -74,7 +74,7 @@ public class MemorySegmentDecryptor {
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivCopy));
 
-        if ((fileOffset & ((AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)) > 0) {
+        if ((fileOffset & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)) > 0) {
             cipher.update(ZERO_SKIP, 0, (int) (fileOffset & ((1 << AesCipherFactory.AES_BLOCK_SIZE_BYTES_IN_POWER) - 1)));
         }
 
@@ -255,11 +255,49 @@ public class MemorySegmentDecryptor {
             byte[] frameIV = AesCipherFactory
                 .computeFrameIV(directoryKey, messageId, frameNumber, currentOffset - frameStart, filePath, cache);
 
-            decryptInPlace(addr + bufferOffset, bytesInFrame, fileKey, frameIV, currentOffset);
+            decryptInPlace(addr + bufferOffset, bytesInFrame, fileKey, frameIV, currentOffset - frameStart);
 
             currentOffset += bytesInFrame;
             bufferOffset += bytesInFrame;
             remaining -= bytesInFrame;
         }
     }
+
+    /**
+     * Decrypts an array of {@link MemorySegment} buffers in-place, where each segment represents
+     * one cache block at a known file offset.
+     *
+     * @param segments       the array of memory segments to decrypt, each representing one cache block
+     * @param segmentCount   the number of segments to decrypt (may be less than {@code segments.length})
+     * @param startOffset    the file offset of the first segment
+     * @param cacheBlockSize the nominal size of each cache block in bytes
+     * @param totalBytesRead the total bytes actually read across all segments
+     * @param fileKey        the AES file encryption key
+     * @param masterKey      the directory/master key used for frame IV computation
+     * @param messageId      the message ID used for frame IV computation
+     * @param frameSize      the encryption frame size in bytes
+     * @param filePath       the file path, used for encryption metadata cache lookups
+     * @param cache          the encryption metadata cache for frame IV caching
+     * @throws Exception if decryption fails
+     */
+    public static void decryptSegments(
+        MemorySegment[] segments, int segmentCount,
+        long startOffset, int cacheBlockSize,
+        long totalBytesRead,
+        byte[] fileKey, byte[] masterKey, byte[] messageId,
+        long frameSize, String filePath,
+        EncryptionMetadataCache cache
+    ) throws Exception {
+        for (int i = 0; i < segmentCount; i++) {
+            long blockOffset = startOffset + (long) i * cacheBlockSize;
+            long remainingBytes = totalBytesRead - (long) i * cacheBlockSize;
+            int blockLength = (int) Math.min(cacheBlockSize, remainingBytes);
+            decryptInPlaceFrameBased(
+                segments[i].address(), blockLength,
+                fileKey, masterKey, messageId,
+                frameSize, blockOffset, filePath, cache
+            );
+        }
+    }
+
 }

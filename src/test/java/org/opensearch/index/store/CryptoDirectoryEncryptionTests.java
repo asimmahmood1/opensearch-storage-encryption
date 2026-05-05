@@ -4,6 +4,11 @@
  */
 package org.opensearch.index.store;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -28,6 +33,9 @@ import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.store.IndexOutput;
 import org.apache.lucene.store.NIOFSDirectory;
 import org.apache.lucene.store.SimpleFSLockFactory;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import org.opensearch.action.support.clustermanager.AcknowledgedResponse;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.SuppressForbidden;
@@ -35,13 +43,15 @@ import org.opensearch.common.action.ActionFuture;
 import org.opensearch.common.crypto.DataKeyPair;
 import org.opensearch.common.crypto.MasterKeyProvider;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.index.store.block.RefCountedMemorySegment;
+import org.opensearch.index.store.block.RefCountedByteBuffer;
 import org.opensearch.index.store.block_cache.BlockCacheKey;
 import org.opensearch.index.store.block_cache.BlockCacheValue;
 import org.opensearch.index.store.block_cache.CaffeineBlockCache;
+import org.opensearch.index.store.block_cache.PrefetchTracker;
 import org.opensearch.index.store.block_loader.BlockLoader;
 import org.opensearch.index.store.block_loader.CryptoDirectIOBlockLoader;
 import org.opensearch.index.store.bufferpoolfs.BufferPoolDirectory;
+import org.opensearch.index.store.bufferpoolfs.RadixBlockTableRegistry;
 import org.opensearch.index.store.cipher.EncryptionMetadataCache;
 import org.opensearch.index.store.key.DefaultKeyResolver;
 import org.opensearch.index.store.key.KeyResolver;
@@ -56,7 +66,6 @@ import org.opensearch.index.store.pool.Pool;
 import org.opensearch.index.store.read_ahead.Worker;
 import org.opensearch.index.store.read_ahead.impl.QueuingWorker;
 import org.opensearch.telemetry.metrics.MetricsRegistry;
-import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.transport.client.AdminClient;
 import org.opensearch.transport.client.Client;
 import org.opensearch.transport.client.IndicesAdminClient;
@@ -70,7 +79,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
  * This validates the core security property: data encrypted with Key A cannot be read with Key B.
  */
 @ThreadLeakFilters(filters = CaffeineThreadLeakFilter.class)
-public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
+public class CryptoDirectoryEncryptionTests {
 
     private static final Logger logger = LogManager.getLogger(CryptoDirectoryEncryptionTests.class);
 
@@ -86,10 +95,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     private static final int TEST_SHARD_ID = 0;
 
     // DirectIO-specific components
-    private Pool<RefCountedMemorySegment> memorySegmentPool;
-    private CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCache;
+    private Pool<RefCountedByteBuffer> memorySegmentPool;
+    private CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCache;
     private Worker readAheadWorker;
-    private org.opensearch.index.store.block_loader.FileChannelCache fileChannelCache;
 
     /**
      * Helper method to register the resolver in the ShardKeyResolverRegistry
@@ -103,10 +111,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         resolverCache.put(new ShardCacheKey(indexUuid, shardId, indexName), resolver);
     }
 
-    @Override
+    @Before
     @SuppressForbidden(reason = "Creating temp directory for test purposes")
     public void setUp() throws Exception {
-        super.setUp();
         tempDir = Files.createTempDirectory("crypto-directory-encryption-test");
 
         // Clear the ShardKeyResolverRegistry cache before each test
@@ -154,9 +161,6 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
             131072, // total memory in bytes (16 * 8192)
             8192    // segment size (block size)
         );
-
-        // Create a FileChannelCache for tests (no O_DIRECT in test env)
-        fileChannelCache = new org.opensearch.index.store.block_loader.FileChannelCache(256, null);
 
         // Create first key provider (Key A) with specific key bytes
         keyProviderA = new MasterKeyProvider() {
@@ -244,12 +248,9 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         registerResolver(testIndexUuidB, TEST_SHARD_ID, "test-index-b", keyResolverB);
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
         // Clean up DirectIO resources
-        if (fileChannelCache != null) {
-            fileChannelCache.close();
-        }
         if (readAheadWorker != null) {
             readAheadWorker.close();
         }
@@ -264,14 +265,14 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         NodeLevelKeyCache.reset();
         // Clear the ShardKeyResolverRegistry cache
         ShardKeyResolverRegistry.clearCache();
-        super.tearDown();
     }
 
     /**
      * Core security test: Data encrypted with Key A cannot be read with Key B.
      * This is the fundamental property that validates encryption is working correctly.
      */
-    public void testDifferentKeyCannotReadData() throws IOException {
+    @Test
+    public void DifferentKeyCannotReadData() throws IOException {
         String testFileName = "test-security.dat";
         String sensitiveData = "This is sensitive data that must be protected by encryption: credit_card=1234-5678-9012-3456";
         byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
@@ -334,7 +335,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     /**
      * Verify that round-trip encryption/decryption with the same key works correctly.
      */
-    public void testCorrectKeyCanReadData() throws IOException {
+    @Test
+    public void CorrectKeyCanReadData() throws IOException {
         String testFileName = "test-roundtrip.dat";
         String originalData = "Test data for encryption round-trip validation: secret_token=abc123xyz";
         byte[] dataBytes = originalData.getBytes(StandardCharsets.UTF_8);
@@ -390,7 +392,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     /**
      * Test that data is actually encrypted at rest (not just in memory).
      */
-    public void testDataIsEncryptedOnDisk() throws IOException {
+    @Test
+    public void DataIsEncryptedOnDisk() throws IOException {
         String testFileName = "test-disk-encryption.dat";
         String plaintext = "PLAINTEXT_DATA_THAT_SHOULD_BE_ENCRYPTED_123456789";
         byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
@@ -450,7 +453,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
      * Core security test for DirectIO: Data encrypted with Key A cannot be read with Key B.
      * Note: DirectIO tests use a simpler pattern without reopening directories due to footer cache requirements.
      */
-    public void testDirectIODifferentKeyCannotReadData() throws IOException {
+    @Test
+    public void DirectIODifferentKeyCannotReadData() throws IOException {
         String testFileName = "test-directio-security.dat";
         String sensitiveData = "DirectIO sensitive data: credit_card=1234-5678-9012-3456";
         byte[] dataBytes = sensitiveData.getBytes(StandardCharsets.UTF_8);
@@ -458,28 +462,29 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache,
-            fileChannelCache
+            encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -497,7 +502,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -530,7 +535,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
      * Verify DirectIO round-trip encryption/decryption works correctly.
      * Note: Keeps directory open to maintain footer cache.
      */
-    public void testDirectIOCorrectKeyCanReadData() throws IOException {
+    @Test
+    public void DirectIOCorrectKeyCanReadData() throws IOException {
         String testFileName = "test-directio-roundtrip.dat";
         String originalData = "DirectIO test data: secret_token=xyz789abc";
         byte[] dataBytes = originalData.getBytes(StandardCharsets.UTF_8);
@@ -538,28 +544,28 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache,
-            fileChannelCache
+            encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -577,7 +583,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -609,7 +615,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
      * Test DirectIO data encryption at rest.
      * Note: Keeps directory open to maintain footer cache.
      */
-    public void testDirectIODataIsEncryptedOnDisk() throws IOException {
+    @Test
+    public void DirectIODataIsEncryptedOnDisk() throws IOException {
         String testFileName = "test-directio-disk-encryption.dat";
         String plaintext = "DIRECTIO_PLAINTEXT_DATA_987654321";
         byte[] dataBytes = plaintext.getBytes(StandardCharsets.UTF_8);
@@ -617,28 +624,29 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache,
-            fileChannelCache
+            encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -656,7 +664,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
@@ -689,7 +697,8 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
     /**
      * Test DirectIO cache invalidation on file deletion.
      */
-    public void testDirectIOCacheInvalidationOnFileDelete() throws IOException {
+    @Test
+    public void DirectIOCacheInvalidationOnFileDelete() throws IOException {
         String testFileName = "test-directio-cache-invalidation.dat";
         String testData = "DirectIO cache test data";
         byte[] dataBytes = testData.getBytes(StandardCharsets.UTF_8);
@@ -697,28 +706,28 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
         Path dirA = tempDir.resolve("index-a");
 
         // Create per-directory blockLoader with keyResolverA
-        BlockLoader<RefCountedMemorySegment> blockLoaderA = new CryptoDirectIOBlockLoader(
+        BlockLoader<RefCountedByteBuffer> blockLoaderA = new CryptoDirectIOBlockLoader(
             memorySegmentPool,
             keyResolverA,
-            encryptionMetadataCache,
-            fileChannelCache
+            encryptionMetadataCache
         );
 
         // Create per-directory cache and worker
-        Cache<BlockCacheKey, BlockCacheValue<RefCountedMemorySegment>> caffeineCache = Caffeine
+        ExecutorService executorA = Executors.newFixedThreadPool(4);
+        Cache<BlockCacheKey, BlockCacheValue<RefCountedByteBuffer>> caffeineCache = Caffeine
             .newBuilder()
             .maximumSize(1000)
             .expireAfterAccess(Duration.ofMinutes(5))
             .recordStats()
             .build();
 
-        CaffeineBlockCache<RefCountedMemorySegment, RefCountedMemorySegment> blockCacheA = new CaffeineBlockCache<>(
+        CaffeineBlockCache<RefCountedByteBuffer, RefCountedByteBuffer> blockCacheA = new CaffeineBlockCache<>(
             caffeineCache,
             blockLoaderA,
-            1000
+            1000,
+            new PrefetchTracker(executorA)
         );
 
-        ExecutorService executorA = Executors.newFixedThreadPool(4);
         Worker readAheadWorkerA = new QueuingWorker(
             100, // queue capacity
             executorA
@@ -736,7 +745,7 @@ public class CryptoDirectoryEncryptionTests extends OpenSearchTestCase {
                 blockLoaderA,
                 readAheadWorkerA,
                 encryptionMetadataCache,
-                fileChannelCache
+                new RadixBlockTableRegistry()
             )
         ) {
             // Write data
